@@ -11,6 +11,7 @@ build/build-info.json (read by smoke.py).
 
 import argparse
 import hashlib
+import importlib.metadata
 import json
 import os
 import platform
@@ -96,7 +97,9 @@ def cache_key(flags):
     for name in ("run.py", "sxng_stubs.py", "build.py", "strip_plugin.py", "babel_plugin.py", "settings.yml"):
         with open(os.path.join(HERE, name), "rb") as f:
             h.update(f.read())
-    h.update(json.dumps([SEARXNG_COMMIT, VERSION, flags, sys.version, platform.machine()]).encode())
+    # Installed versions too: SearXNG's dependencies, Nuitka, tzdata on Windows.
+    installed = sorted(f"{d.metadata['Name']}=={d.version}" for d in importlib.metadata.distributions())
+    h.update(json.dumps([SEARXNG_COMMIT, VERSION, flags, sys.version, platform.machine(), installed]).encode())
     return f"{VERSION}-{h.hexdigest()[:12]}"
 
 

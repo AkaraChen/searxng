@@ -3,9 +3,10 @@
 
     python smoke.py [build/build-info.json]
 
-Fails on: no /healthz within 180 s, fewer than 100 engines loaded, invalid
-JSON, no result from Wikipedia (proves outbound TLS through curl_cffi), the
-server not exiting on terminate, or the extraction cache not being reused.
+Fails on: no /healthz within 180 s, fewer than 100 engines loaded, an engine
+other than the onion ones failing to load, invalid JSON, no result from
+Wikipedia (proves outbound TLS through curl_cffi), the server not exiting on
+terminate, or the extraction cache not being reused.
 Other queries are reported, not enforced: CI IPs get CAPTCHAs.
 
 On Windows, terminate() is TerminateProcess on the onefile bootstrap only, so
@@ -134,7 +135,11 @@ def main():
             failures.append(f"only {engines} engines loaded")
         with open(log.name, "rb") as f:  # not log itself: the server shares its file offset
             not_loaded = re.findall(rb"searx\.engines: \(PID \d+\) (.+?): can't register engine", f.read())
-        not_loaded = ", ".join(sorted(n.decode() for n in set(not_loaded))) or "-"
+        not_loaded = sorted({n.decode() for n in not_loaded})
+        # Onion engines are left out unless outgoing.using_tor_proxy is set.
+        if unexpected := [n for n in not_loaded if n not in ("ahmia", "torch")]:
+            failures.append(f"engines failed to load: {', '.join(unexpected)}")
+        not_loaded = ", ".join(not_loaded) or "-"
         for label, params in QUERIES:
             t0 = time.monotonic()
             try:

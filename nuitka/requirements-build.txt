@@ -3,3 +3,6 @@ nuitka==4.3.1
 zstandard==0.25.0
 ordered-set==4.1.0
 patchelf==0.19.1.0; sys_platform == "linux"
+# Windows has no system time zone database; zoneinfo (bilibili engine, weather,
+# time_zone plugin) needs this one. Nuitka includes it on Windows by itself.
+tzdata==2026.5; sys_platform == "win32"
