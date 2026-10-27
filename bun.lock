@@ -4,6 +4,10 @@
   "workspaces": {
     "": {
       "name": "searxng-monorepo",
+      "devDependencies": {
+        "@types/bun": "latest",
+        "typescript": "^5.9.0",
+      },
     },
     "packages/client": {
       "name": "@searxng-js/searxng",

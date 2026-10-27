@@ -1,0 +1,137 @@
+name: release
+
+# Builds and tests the binaries (the ci workflow), assembles and packs the npm
+# packages, install-tests them on every platform through a local registry, and
+# on a v* tag publishes them with npm trusted publishing (OIDC, no token) and
+# creates the GitHub release. Run it by hand for a full dry run.
+# First release: see "Releasing" in README.md (scripts/bootstrap-npm.ts).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - name: Tag matches the package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version="$(jq -r .version packages/client/package.json)"
+          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match packages/client/package.json version $version" >&2
+            exit 1
+          fi
+
+  ci:
+    needs: version
+    uses: ./.github/workflows/ci.yml
+
+  pack:
+    needs: ci
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: searxng-*
+          path: artifacts
+      - run: bun scripts/assemble-packages.ts --artifacts artifacts --require-all
+      - run: bun scripts/pack.ts --require-all
+      - uses: actions/upload-artifact@v7
+        with:
+          name: tarballs
+          path: dist-npm/tarballs
+          if-no-files-found: error
+
+  install-test:
+    name: install (${{ matrix.os }}, ${{ matrix.pm }})
+    needs: pack
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-26.04, macos-26, windows-2025]
+        pm: [npm, bun]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/download-artifact@v8
+        with:
+          name: tarballs
+          path: dist-npm/tarballs
+      # bun also checks an app built with bun build --compile, as sex ships it
+      - run: bun scripts/install-test.ts --tarballs dist-npm/tarballs --pm ${{ matrix.pm }} ${{ matrix.pm == 'bun' && '--compile' || '' }}
+
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: install-test
+    runs-on: ubuntu-26.04
+    environment: npm
+    permissions:
+      contents: write # the GitHub release
+      id-token: write # npm trusted publishing
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - uses: oven-sh/setup-bun@v2
+      - uses: actions/download-artifact@v8
+        with:
+          name: tarballs
+          path: tarballs
+      # Trusted publishing needs npm 11.5.1 or newer.
+      - run: npm install -g npm@^11.15.0
+      - name: Publish the platform packages, then the main package
+        # No npm token anywhere: npm authenticates this job through OIDC and
+        # adds provenance.
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          case "$version" in
+            *-*) pre="${version#*-}"; tag="${pre%%[^a-z]*}"; tag="${tag:-next}" ;;
+            *) tag=latest ;;
+          esac
+          echo "dist-tag: $tag"
+          # The ./ prefix matters: npm reads "tarballs/x.tgz" as a GitHub user/repo.
+          main="./tarballs/searxng-js-searxng-$version.tgz"
+          publish() {
+            name="$(tar -xOzf "$1" package/package.json | jq -r .name)"
+            if npm view "$name@$version" version >/dev/null 2>&1; then
+              echo "$name@$version is already published, skipping"
+            else
+              npm publish "$1" --access public --tag "$tag"
+            fi
+          }
+          for tgz in ./tarballs/*.tgz; do
+            [ "$tgz" = "$main" ] || publish "$tgz"
+          done
+          # The main package lists every platform package as an optional
+          # dependency; registry metadata is CDN-cached, so wait for them.
+          bun scripts/wait-for-packages.ts --version "$version"
+          publish "$main"
+      - name: GitHub release with the tarballs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          prerelease=""
+          case "$GITHUB_REF_NAME" in *-*) prerelease="--prerelease" ;; esac
+          gh release create "$GITHUB_REF_NAME" tarballs/*.tgz tarballs/SHA256SUMS --title "$GITHUB_REF_NAME" --generate-notes $prerelease

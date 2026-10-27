@@ -4,6 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { prepareBinary, resolveBinary } from "./binary.ts";
 import { createClient, type SearxngClient } from "./client.ts";
 
 /** Settings used when no `settingsPath` is given: JSON API on, no limiter, no valkey. */
@@ -20,7 +21,10 @@ valkey:
 `;
 
 export interface StartServerOptions {
-  /** The SearXNG executable. Default: `$SEARXNG_BINARY`. */
+  /**
+   * The SearXNG executable. Default: `$SEARXNG_BINARY`, else the binary of the
+   * installed platform package (see {@link resolveBinary}).
+   */
   binaryPath?: string;
   /** Extra arguments for the executable. */
   args?: readonly string[];
@@ -89,8 +93,13 @@ async function freePort(host: string): Promise<number> {
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function startServer(options: StartServerOptions = {}): Promise<SearxngServer> {
-  const binaryPath = options.binaryPath ?? process.env.SEARXNG_BINARY;
-  if (!binaryPath) throw new StartServerError("no SearXNG binary: pass binaryPath or set SEARXNG_BINARY", "");
+  const given = options.binaryPath ?? process.env.SEARXNG_BINARY;
+  let binaryPath: string;
+  try {
+    binaryPath = given ? await prepareBinary(given) : await resolveBinary();
+  } catch (err) {
+    throw new StartServerError(`cannot start SearXNG: ${(err as Error).message}`, "");
+  }
   options.signal?.throwIfAborted();
   const host = options.host ?? "127.0.0.1";
   const port = options.port ?? (await freePort(host));

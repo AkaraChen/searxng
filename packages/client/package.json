@@ -1,8 +1,9 @@
 {
   "name": "@searxng-js/searxng",
   "version": "0.1.0",
-  "description": "Start a SearXNG binary and query its JSON API with a typed client",
-  "license": "AGPL-3.0-or-later",
+  "description": "Start SearXNG (prebuilt binary included) and query its JSON API with a typed client",
+  "license": "MIT",
+  "author": "akarachen",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/AkaraChen/searxng.git",
@@ -14,9 +15,14 @@
       "types": "./dist/index.d.ts",
       "bun": "./src/index.ts",
       "default": "./dist/index.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
-  "files": ["dist", "src"],
+  "files": [
+    "dist",
+    "src",
+    "LICENSE"
+  ],
   "engines": {
     "node": ">=20.3"
   },
@@ -29,5 +35,8 @@
     "@types/bun": "latest",
     "@types/node": "^26.6.5",
     "typescript": "^5.9.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

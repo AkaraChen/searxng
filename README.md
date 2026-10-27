@@ -3,7 +3,7 @@
 [SearXNG](https://github.com/searxng/searxng) as one self-contained executable, plus a JS client that starts it and queries its JSON API.
 
 - `nuitka/`: builds SearXNG (pinned commit, see `nuitka/build.py`) into a single [Nuitka](https://nuitka.net) onefile binary for Linux, macOS and Windows. Only the JSON API (`/search?format=json`, `/config`, `/healthz`) is a goal; the HTML UI is left out.
-- `packages/client` (`@searxng-js/searxng`): `startServer()` spawns the binary and waits until it is ready; `createClient()` is a hand-written, typed client for the JSON API. SearXNG publishes no OpenAPI spec, so there is nothing to generate from.
+- `packages/client` (`@searxng-js/searxng` on npm): `startServer()` spawns the binary and waits until it is ready; `createClient()` is a hand-written, typed client for the JSON API. SearXNG publishes no OpenAPI spec, so there is nothing to generate from. Releases bring the binary along as per-platform optional dependencies (`@searxng-js/linux-x64`, `@searxng-js/darwin-arm64`, `@searxng-js/win32-x64`).
 
 CI (`.github/workflows/ci.yml`) builds the binary on `ubuntu-22.04` (x64), `macos-26` (arm64) and `windows-2025` (x64), smoke-tests it (`nuitka/smoke.py`), runs the client tests against it, and uploads it as an artifact. Linux builds on the oldest supported Ubuntu for its glibc floor (see Portability); a `linux-test` job runs that binary on `ubuntu-26.04` as well. Each job's numbers are in its run summary.
 
@@ -12,16 +12,34 @@ CI (`.github/workflows/ci.yml`) builds the binary on `ubuntu-22.04` (x64), `maco
 ```ts
 import { startServer } from "@searxng-js/searxng";
 
-await using server = await startServer({ binaryPath: "/path/to/searxng" }); // or $SEARXNG_BINARY
+await using server = await startServer(); // binaryPath, else $SEARXNG_BINARY, else the platform package
 const res = await server.client.search({ q: "zig comptime", language: "en", categories: ["general"], timeRange: "year" });
 for (const r of res.results) console.log(r.title, r.url, r.engines);
 // server.stop() runs on dispose: SIGTERM, then SIGKILL after 10 s (Windows: kills the process tree)
 ```
 
 - `startServer` picks a free port (or `port`), binds `127.0.0.1` (or `host`), and writes a minimal `settings.yml` to a temporary directory unless you pass `settingsPath`. Port, host and a random secret are passed as `SEARXNG_PORT`, `SEARXNG_BIND_ADDRESS` and `SEARXNG_SECRET`, which override the file. It rejects with `StartServerError` (including the last 8 KB of server output) if the process exits, `timeoutMs` (default 60 s) passes, or `signal` aborts.
+- Without `binaryPath` or `$SEARXNG_BINARY`, `resolveBinary()` imports the platform package for `process.platform`/`process.arch`. The imports are literal, so `bun build --compile` inlines the platform, embeds only the target's binary, and the package of other targets need not be installed. Inside a compiled executable the binary is an embedded file (`/$bunfs/...`), which cannot be spawned, so it is unpacked once to `<user cache dir>/searxng-js/<name>-<hash>/`. The platform packages carry `os`, `cpu` and (Linux) `libc: glibc`, so musl systems get no binary and a clear error.
 - The server does not outlive its parent. `stop()` and an exit handler end it (on Windows by killing the process tree, since the binary is a launcher plus a server child). If the Node/Bun process dies without running exit handlers, e.g. on SIGKILL, the server exits too: it gets a stdin pipe and `SEARXNG_EXIT_ON_STDIN_EOF=1`, so it stops when the pipe closes. The integration tests cover both on all three platforms.
 - `createClient({ baseUrl })` exposes `search(params)`, `config()` and `health()`. Params are camelCase (`page`, `timeRange`, `safeSearch`); lists are joined with commas. Responses keep SearXNG's field names. Non-2xx responses throw `SearxngError` with `status` and SearXNG's `error` message. The default per-request timeout is 30 s, and it combines with a caller's `signal`.
 - Runs on Node ≥ 20.3 and Bun. `bun test` runs the unit tests (a fake server stands in for SearXNG). `SEARXNG_BINARY=… bun test` also runs the integration tests against a real binary.
+
+## Releasing
+
+`.github/workflows/release.yml` runs on `v*` tags; started by hand it is a full dry run without the publish job. It calls the ci workflow (build, smoke test and client tests on every platform), then:
+
+1. `scripts/assemble-packages.ts` turns the build artifacts into `@searxng-js/<target>` packages (binary, `index.js` for Node, `index.bun.js` for Bun's file import, `BUILD-INFO.json` with the SHA-256, AGPL `LICENSE`, `THIRD-PARTY-NOTICES.md` with the corresponding source, `licenses/` from the bundled Python distributions and CPython).
+2. `scripts/pack.ts` packs them and the main package, adding `optionalDependencies` on the platform packages at the same version only for `npm pack`.
+3. `scripts/install-test.ts` installs the tarballs through a local registry on Linux, macOS and Windows, with npm (checked under Node) and bun (checked under Bun, and as a `bun build --compile` executable run without `node_modules`). Each install must pick exactly its platform package and start SearXNG with `startServer()` alone.
+4. On a tag, the publish job publishes the platform packages, waits until the registry serves them (`scripts/wait-for-packages.ts`), publishes the main package, and creates the GitHub release with the tarballs and `SHA256SUMS`. It uses npm trusted publishing: GitHub's OIDC token, no npm token, provenance added by npm. It runs in the GitHub environment `npm`, where you can require an approval.
+
+The tag must match `packages/client/package.json`'s version; versions with a `-suffix` go to that dist-tag (`0.2.0-rc.1` → `rc`) and become a prerelease.
+
+First release: npm can only trust a package that exists, and a new trust configuration expires unless it publishes within 2 days. So:
+
+1. Run the release workflow by hand and let it pass.
+2. As an owner of the `@searxng-js` npm org, with 2FA and npm 11.15 or newer: `bun scripts/bootstrap-npm.ts` (try `--dry-run` first). It logs in through the browser in a throwaway npm config, publishes a deprecated placeholder `0.0.0` of each package, and trusts `release.yml` of this repository (environment `npm`) for each.
+3. Within 2 days: `git tag v0.1.0 && git push origin v0.1.0`.
 
 ## Building the binary
 
@@ -130,8 +148,9 @@ All trims are build flags, two small Nuitka user plugins (`strip_plugin.py`, `ba
 
 ## Licences
 
-- **SearXNG** is AGPL-3.0-or-later, and so is this repository. Anyone who distributes a binary must offer the corresponding source. That source is SearXNG at the pinned commit plus this repository (build flags, plugins, entry script, stubs). Shipping the `.py` sources inside the binary does not replace that offer.
-- **curl_cffi** is MIT. Its wheel statically links curl-impersonate/libcurl (curl licence), BoringSSL (OpenSSL/SSLeay and ISC for older code, Apache-2.0 for newer code), nghttp2/nghttp3 (MIT), brotli (MIT), zstd (BSD), zlib, and libidn2 (LGPL-3.0+/GPL-2.0+). The wheel ships only curl_cffi's own MIT text, so a binary distribution should add these notices.
+- **This repository:** AGPL-3.0-or-later, except `packages/client` (`@searxng-js/searxng`), which is MIT: it only spawns the binary and talks HTTP to it. The binary packages are AGPL-3.0-or-later.
+- **SearXNG** is AGPL-3.0-or-later. Anyone who distributes a binary must offer the corresponding source. That source is SearXNG at the pinned commit plus this repository (build flags, plugins, entry script, stubs). Shipping the `.py` sources inside the binary does not replace that offer.
+- **curl_cffi** is MIT. Its wheel statically links curl-impersonate/libcurl (curl licence), BoringSSL (OpenSSL/SSLeay and ISC for older code, Apache-2.0 for newer code), nghttp2/nghttp3 (MIT), brotli (MIT), zstd (BSD), zlib, and libidn2 (LGPL-3.0+/GPL-2.0+). The wheel ships only curl_cffi's own MIT text; the binary packages list these components and their licences in `THIRD-PARTY-NOTICES.md`, with links rather than the full texts.
 - **Others:** CPython (PSF), lxml (BSD) with libxml2/libxslt (MIT), babel (BSD, CLDR data under the Unicode licence), Flask/Werkzeug/Jinja2 (BSD), PyYAML (MIT), msgspec (BSD), certifi (MPL-2.0). Nuitka's runtime (Apache-2.0) is compiled into the binary.
 
 ## Remaining optimizations (not done)
@@ -145,7 +164,6 @@ Estimates are compressed sizes on Linux.
 - **Strip on macOS** (`strip -x` before Nuitka re-signs). Check whether the macOS curl_cffi wheel is unstripped too.
 - **Smaller stdlib:** `_pyrepl`, `__hello__` and similar (< 0.3 MB).
 - **Startup:** the onefile bootstrap's warm overhead is about 0.5 s. A `--standalone` directory (no onefile), unpacked once by the JS package, would start in about 0.7 s and drop the 55 MiB bootstrap process.
-- **Distribution for the JS client:** publish per-platform binary packages (esbuild-style `optionalDependencies`) or download from GitHub releases, so `binaryPath` becomes optional.
 - **CI:** cache Nuitka/ccache between runs; add linux-arm64 and macos-x64; use a manylinux_2_28 container for Linux.
 
 ## Verdict

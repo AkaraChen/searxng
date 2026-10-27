@@ -1,10 +1,17 @@
 {
   "name": "searxng-monorepo",
   "private": true,
-  "workspaces": ["packages/*"],
+  "type": "module",
+  "workspaces": [
+    "packages/*"
+  ],
   "scripts": {
-    "check": "bun run --filter '*' check",
+    "check": "bun run --filter '*' check && tsc -p .",
     "test": "bun run --filter '*' test",
     "build": "bun run --filter '*' build"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.9.0"
   }
 }

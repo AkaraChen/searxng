@@ -5,8 +5,9 @@
     python build.py build [--trim-babel] [-- extra Nuitka flags]
 
 `build` must run in a Python with SearXNG's requirements and
-requirements-build.txt installed. Output: build/searxng[.exe] and
-build/build-info.json (read by smoke.py).
+requirements-build.txt installed. Output: build/searxng[.exe],
+build/build-info.json (read by smoke.py) and build/licenses/ (the licence
+files of the bundled Python distributions and CPython).
 """
 
 import argparse
@@ -15,6 +16,7 @@ import importlib.metadata
 import json
 import os
 import platform
+import re
 import shutil
 import subprocess
 import sys
@@ -103,6 +105,35 @@ def cache_key(flags):
     return f"{VERSION}-{h.hexdigest()[:12]}"
 
 
+# Installed only to build; nothing of theirs is in the binary.
+BUILD_ONLY = {"ordered-set", "patchelf", "pip", "setuptools", "wheel", "zstandard"}
+
+
+def collect_licenses():
+    """Copies the licence files of every installed distribution that can end up
+    in the binary, plus CPython's, to build/licenses/<name>-<version>/."""
+    out = os.path.join(OUT_DIR, "licenses")
+    names = re.compile(r"(LICEN[CS]E|COPYING|NOTICE|AUTHORS)", re.I)
+    for dist in importlib.metadata.distributions():
+        name = dist.metadata["Name"]
+        if name is None or name.lower() in BUILD_ONLY:
+            continue
+        for file in dist.files or []:
+            if ".dist-info" in str(file) and names.search(file.name):
+                dest = os.path.join(out, f"{name}-{dist.version}", file.name)
+                os.makedirs(os.path.dirname(dest), exist_ok=True)
+                shutil.copyfile(dist.locate_file(file), dest)
+    for candidate in (
+        os.path.join(sys.base_prefix, "lib", f"python{sys.version_info.major}.{sys.version_info.minor}", "LICENSE.txt"),
+        os.path.join(sys.base_prefix, "LICENSE.txt"),
+    ):
+        if os.path.exists(candidate):
+            dest = os.path.join(out, f"CPython-{platform.python_version()}", "LICENSE.txt")
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            shutil.copyfile(candidate, dest)
+            break
+
+
 def build(trim_babel, extra):
     if not os.path.isdir(SEARXNG_DIR):
         sys.exit("SearXNG is missing; run `python build.py fetch` first")
@@ -138,6 +169,7 @@ def build(trim_babel, extra):
     }
     with open(os.path.join(OUT_DIR, "build-info.json"), "w", encoding="utf-8") as f:
         json.dump(info, f, indent=2)
+    collect_licenses()
     print(json.dumps(info, indent=2))
 
 
