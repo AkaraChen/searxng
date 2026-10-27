@@ -7,9 +7,9 @@ on:
 
 jobs:
   client:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-26.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: oven-sh/setup-bun@v2
       - run: bun install --frozen-lockfile
       - run: bun run check
@@ -21,16 +21,19 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Linux builds on the oldest supported Ubuntu on purpose: compiled code
+          # needs the build host's glibc or newer (22.04: 2.35). The linux-test
+          # job below runs this binary on the newest Ubuntu.
           - { os: ubuntu-22.04, target: linux-x64 }
-          - { os: macos-14, target: darwin-arm64 }
-          - { os: windows-2022, target: win32-x64 }
+          - { os: macos-26, target: darwin-arm64 }
+          - { os: windows-2025, target: win32-x64 }
     runs-on: ${{ matrix.os }}
     defaults:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.13"
       - name: Fetch SearXNG
@@ -50,7 +53,7 @@ jobs:
       - name: Client tests against the binary
         working-directory: packages/client
         run: SEARXNG_BINARY="$(jq -r .binary ../../nuitka/build/build-info.json)" bun test
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: searxng-${{ matrix.target }}
           path: |
@@ -59,3 +62,24 @@ jobs:
             nuitka/build/build-info.json
             nuitka/settings.yml
           if-no-files-found: error
+
+  linux-test:
+    # The ubuntu-22.04 build on the newest Ubuntu.
+    needs: binary
+    if: ${{ !cancelled() }}
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          name: searxng-linux-x64
+          path: nuitka
+      - run: chmod +x nuitka/build/searxng # artifacts drop the executable bit
+      - name: Smoke test
+        working-directory: nuitka
+        run: python3 smoke.py
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: Client tests against the binary
+        working-directory: packages/client
+        run: SEARXNG_BINARY="$(jq -r .binary ../../nuitka/build/build-info.json)" bun test

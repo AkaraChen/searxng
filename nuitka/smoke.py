@@ -7,10 +7,15 @@ Fails on: no /healthz within 180 s, fewer than 100 engines loaded, invalid
 JSON, no result from Wikipedia (proves outbound TLS through curl_cffi), the
 server not exiting on terminate, or the extraction cache not being reused.
 Other queries are reported, not enforced: CI IPs get CAPTCHAs.
+
+On Windows, terminate() is TerminateProcess on the onefile bootstrap only, so
+the enforced stop kills the process tree (as the JS client does). The warm stop
+terminates only the bootstrap and reports how long its orphaned child lives.
 """
 
 import json
 import os
+import platform
 import shutil
 import signal
 import socket
@@ -36,11 +41,12 @@ QUERIES = [
 
 
 def nuitka_cache_dir():
+    # Nuitka's {CACHE_DIR}: %LOCALAPPDATA% on Windows; on every other system,
+    # macOS included, an absolute $XDG_CACHE_HOME or else ~/.cache.
     if sys.platform == "win32":
         return os.environ["LOCALAPPDATA"]
-    if sys.platform == "darwin":
-        return os.path.expanduser("~/Library/Caches")
-    return os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache")
+    xdg = os.environ.get("XDG_CACHE_HOME", "")
+    return xdg if xdg.startswith("/") else os.path.expanduser("~/.cache")
 
 
 def get(path, timeout=30):
@@ -69,17 +75,38 @@ def start(binary, cwd, log):
     raise SystemExit("/healthz did not answer within 180 s")
 
 
+def wait_port_closed(seconds):
+    t0 = time.monotonic()
+    while time.monotonic() - t0 < seconds:
+        if not port_open():
+            return time.monotonic() - t0
+        time.sleep(0.1)
+    return None
+
+
 def stop(proc):
     if sys.platform == "win32":
-        proc.terminate()
+        subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)], capture_output=True)
     else:
         proc.send_signal(signal.SIGTERM)
     rc = proc.wait(timeout=30)
-    for _ in range(100):  # the onefile child must go away with the bootstrap
-        if not port_open():
-            return rc
-        time.sleep(0.1)
-    raise SystemExit("port still open after terminate: the server child survived")
+    if wait_port_closed(10) is None:  # the onefile child must go away with the bootstrap
+        raise SystemExit("port still open after terminate: the server child survived")
+    return rc
+
+
+def stop_bootstrap_only(proc):
+    """Windows: TerminateProcess on the bootstrap alone; returns how long the orphaned child lived."""
+    query = f"(Get-CimInstance Win32_Process -Filter 'ParentProcessId={proc.pid}').ProcessId"
+    children = subprocess.run(["powershell", "-NoProfile", "-Command", query], capture_output=True, text=True).stdout.split()
+    proc.terminate()
+    rc = proc.wait(timeout=30)
+    lived = wait_port_closed(30)
+    for pid in children:
+        subprocess.run(["taskkill", "/F", "/PID", pid], capture_output=True)
+    if wait_port_closed(10) is None:
+        raise SystemExit("port still open after killing the server child")
+    return rc, "survived 30 s" if lived is None else f"exited after {lived:.1f} s"
 
 
 def main():
@@ -122,16 +149,21 @@ def main():
         proc, warm = start(binary, workdir, log)
         if os.stat(marker).st_mtime_ns != marker_mtime:
             failures.append("extraction cache was not reused")
-        rc_warm = stop(proc)
+        if sys.platform == "win32":
+            rc_warm, orphan = stop_bootstrap_only(proc)
+        else:
+            rc_warm, orphan = stop(proc), None
     finally:
         log.close()
 
     summary = [
         f"### {info['platform']} (Python {info['python']})",
         "",
+        f"- run on: {platform.platform(terse=True)}",
         f"- binary: {info['size'] / 1048576:.1f} MiB, built in {info['build_seconds']} s",
         f"- start to /healthz: cold {cold:.2f} s, warm {warm:.2f} s; engines loaded: {engines}",
         f"- terminate: exit {rc_cold} / {rc_warm}",
+        *([f"- bootstrap-only terminate: orphaned server child {orphan}"] if orphan else []),
         "",
         "| query | time | results + infoboxes | engines | unresponsive |",
         "|---|---|---|---|---|",

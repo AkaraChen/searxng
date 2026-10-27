@@ -1,4 +1,4 @@
-import { type ChildProcess, spawn } from "node:child_process";
+import { type ChildProcess, spawn, spawnSync } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
@@ -53,7 +53,10 @@ export interface SearxngServer extends AsyncDisposable {
   readonly client: SearxngClient;
   /** Resolves with the exit code (or null when killed by a signal) once the process exits. */
   readonly exited: Promise<number | null>;
-  /** SIGTERM, then SIGKILL after `graceMs` (default 5 s); removes generated settings. Idempotent. */
+  /**
+   * SIGTERM, then SIGKILL after `graceMs` (default 5 s); on Windows, kills the
+   * process tree at once. Removes generated settings. Idempotent.
+   */
   stop(graceMs?: number): Promise<void>;
 }
 
@@ -132,13 +135,28 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sea
     hasExited = true;
   });
 
+  // On Windows, kill() is TerminateProcess on the onefile bootstrap only and
+  // its server child keeps running (and holding the port): kill the tree.
+  const taskkill = ["/pid", String(child.pid), "/T", "/F"];
+  const windowsTree = process.platform === "win32" && child.pid !== undefined;
+
   // Do not leave the server behind when this process exits.
-  const killOnExit = () => child.kill("SIGKILL");
+  const killOnExit = () => {
+    if (windowsTree) spawnSync("taskkill", taskkill, { stdio: "ignore", windowsHide: true });
+    child.kill("SIGKILL");
+  };
   process.once("exit", killOnExit);
 
   let stopping: Promise<void> | undefined;
   const stop = (graceMs = 5000) => {
     stopping ??= (async () => {
+      if (!hasExited && windowsTree) {
+        await new Promise((resolve) =>
+          spawn("taskkill", taskkill, { stdio: "ignore", windowsHide: true })
+            .once("error", resolve)
+            .once("exit", resolve),
+        );
+      }
       if (!hasExited) {
         child.kill("SIGTERM");
         const timer = setTimeout(() => child.kill("SIGKILL"), graceMs);
