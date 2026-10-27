@@ -1,0 +1,179 @@
+import { type ChildProcess, spawn } from "node:child_process";
+import { randomBytes } from "node:crypto";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createClient, type SearxngClient } from "./client.ts";
+
+/** Settings used when no `settingsPath` is given: JSON API on, no limiter, no valkey. */
+export const DEFAULT_SETTINGS = `use_default_settings: true
+general:
+  instance_name: searxng
+search:
+  formats: [html, json]
+server:
+  limiter: false
+  image_proxy: false
+valkey:
+  url: false
+`;
+
+export interface StartServerOptions {
+  /** The SearXNG executable. Default: `$SEARXNG_BINARY`. */
+  binaryPath?: string;
+  /** Extra arguments for the executable. */
+  args?: readonly string[];
+  /** Default: a free port. */
+  port?: number;
+  /** Default: `127.0.0.1`. */
+  host?: string;
+  /**
+   * A SearXNG settings.yml. Default: {@link DEFAULT_SETTINGS} in a temporary
+   * directory. Port, host and secret are always passed as SEARXNG_PORT,
+   * SEARXNG_BIND_ADDRESS and SEARXNG_SECRET, which override the file.
+   */
+  settingsPath?: string;
+  /** Default: random per start. */
+  secretKey?: string;
+  /** Extra environment for the server process. */
+  env?: Record<string, string>;
+  /** How long to wait for `/healthz`; default 60 s (the first start unpacks the binary). */
+  timeoutMs?: number;
+  /** Aborting before the server is ready kills it and rejects. */
+  signal?: AbortSignal;
+  /** Server output (stdout and stderr), as it arrives. */
+  onOutput?: (chunk: string) => void;
+}
+
+export interface SearxngServer extends AsyncDisposable {
+  readonly url: string;
+  readonly port: number;
+  readonly pid: number;
+  readonly client: SearxngClient;
+  /** Resolves with the exit code (or null when killed by a signal) once the process exits. */
+  readonly exited: Promise<number | null>;
+  /** SIGTERM, then SIGKILL after `graceMs` (default 5 s); removes generated settings. Idempotent. */
+  stop(graceMs?: number): Promise<void>;
+}
+
+export class StartServerError extends Error {
+  /** The last few KB of server output. */
+  readonly output: string;
+
+  constructor(message: string, output: string) {
+    super(output ? `${message}\n--- server output ---\n${output}` : message);
+    this.name = "StartServerError";
+    this.output = output;
+  }
+}
+
+async function freePort(host: string): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const srv = createServer();
+    srv.unref();
+    srv.on("error", reject);
+    srv.listen(0, host, () => {
+      const address = srv.address();
+      srv.close(() => (address && typeof address === "object" ? resolve(address.port) : reject(new Error("no port"))));
+    });
+  });
+}
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+export async function startServer(options: StartServerOptions = {}): Promise<SearxngServer> {
+  const binaryPath = options.binaryPath ?? process.env.SEARXNG_BINARY;
+  if (!binaryPath) throw new StartServerError("no SearXNG binary: pass binaryPath or set SEARXNG_BINARY", "");
+  options.signal?.throwIfAborted();
+  const host = options.host ?? "127.0.0.1";
+  const port = options.port ?? (await freePort(host));
+
+  let tempDir: string | undefined;
+  let settingsPath = options.settingsPath;
+  if (!settingsPath) {
+    tempDir = await mkdtemp(join(tmpdir(), "searxng-"));
+    settingsPath = join(tempDir, "settings.yml");
+    await writeFile(settingsPath, DEFAULT_SETTINGS);
+  }
+
+  const child: ChildProcess = spawn(binaryPath, options.args ?? [], {
+    env: {
+      ...process.env,
+      ...options.env,
+      SEARXNG_SETTINGS_PATH: settingsPath,
+      SEARXNG_PORT: String(port),
+      SEARXNG_BIND_ADDRESS: host,
+      SEARXNG_SECRET: options.secretKey ?? randomBytes(32).toString("hex"),
+    },
+    stdio: ["ignore", "pipe", "pipe"],
+    windowsHide: true,
+  });
+
+  let output = "";
+  const onData = (chunk: Buffer) => {
+    const text = chunk.toString();
+    output = (output + text).slice(-8192);
+    options.onOutput?.(text);
+  };
+  child.stdout?.on("data", onData);
+  child.stderr?.on("data", onData);
+
+  let spawnError: Error | undefined;
+  const exited = new Promise<number | null>((resolve) => {
+    child.once("error", (err) => {
+      spawnError = err;
+      resolve(null);
+    });
+    child.once("exit", (code) => resolve(code));
+  });
+  let hasExited = false;
+  void exited.then(() => {
+    hasExited = true;
+  });
+
+  // Do not leave the server behind when this process exits.
+  const killOnExit = () => child.kill("SIGKILL");
+  process.once("exit", killOnExit);
+
+  let stopping: Promise<void> | undefined;
+  const stop = (graceMs = 5000) => {
+    stopping ??= (async () => {
+      if (!hasExited) {
+        child.kill("SIGTERM");
+        const timer = setTimeout(() => child.kill("SIGKILL"), graceMs);
+        await exited;
+        clearTimeout(timer);
+      }
+      process.removeListener("exit", killOnExit);
+      if (tempDir) await rm(tempDir, { recursive: true, force: true });
+    })();
+    return stopping;
+  };
+
+  const url = `http://${host.includes(":") ? `[${host}]` : host}:${port}`;
+  const client = createClient({ baseUrl: url });
+  const deadline = Date.now() + (options.timeoutMs ?? 60_000);
+  try {
+    while (!(await client.health({ signal: AbortSignal.timeout(2000) }))) {
+      if (spawnError) throw new StartServerError(`cannot start ${binaryPath}: ${spawnError.message}`, output);
+      if (hasExited) throw new StartServerError(`SearXNG exited with code ${child.exitCode} before it was ready`, output);
+      options.signal?.throwIfAborted();
+      if (Date.now() > deadline) throw new StartServerError(`SearXNG did not answer /healthz within ${options.timeoutMs ?? 60_000} ms`, output);
+      await sleep(100);
+    }
+  } catch (err) {
+    await stop(0);
+    throw err;
+  }
+
+  return {
+    url,
+    port,
+    pid: child.pid as number,
+    client,
+    exited,
+    stop,
+    [Symbol.asyncDispose]: () => stop(),
+  };
+}

@@ -1,0 +1,10 @@
+{
+  "name": "searxng-monorepo",
+  "private": true,
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "check": "bun run --filter '*' check",
+    "test": "bun run --filter '*' test",
+    "build": "bun run --filter '*' build"
+  }
+}

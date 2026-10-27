@@ -1,0 +1,13 @@
+use_default_settings: true
+general:
+  instance_name: sex-searxng
+search:
+  formats: [html, json]
+server:
+  secret_key: "nuitka-spike-not-secret"
+  limiter: false
+  image_proxy: false
+  bind_address: "127.0.0.1"
+  port: 8899
+valkey:
+  url: false

@@ -1,0 +1,61 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  client:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - run: bun run check
+      - run: bun run test
+      - run: bun run build
+
+  binary:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: ubuntu-22.04, target: linux-x64 }
+          - { os: macos-14, target: darwin-arm64 }
+          - { os: windows-2022, target: win32-x64 }
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Fetch SearXNG
+        working-directory: nuitka
+        run: python build.py fetch
+      - name: Install build dependencies
+        working-directory: nuitka
+        run: python -m pip install -r searxng/requirements.txt -r requirements-build.txt
+      - name: Build
+        working-directory: nuitka
+        run: python build.py build
+      - name: Smoke test
+        working-directory: nuitka
+        run: python smoke.py
+      - uses: oven-sh/setup-bun@v2
+      - run: bun install --frozen-lockfile
+      - name: Client tests against the binary
+        working-directory: packages/client
+        run: SEARXNG_BINARY="$(jq -r .binary ../../nuitka/build/build-info.json)" bun test
+      - uses: actions/upload-artifact@v4
+        with:
+          name: searxng-${{ matrix.target }}
+          path: |
+            nuitka/build/searxng
+            nuitka/build/searxng.exe
+            nuitka/build/build-info.json
+            nuitka/settings.yml
+          if-no-files-found: error
