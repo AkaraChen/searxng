@@ -15,7 +15,7 @@ import { startServer } from "@akarachen/searxng";
 await using server = await startServer({ binaryPath: "/path/to/searxng" }); // or $SEARXNG_BINARY
 const res = await server.client.search({ q: "zig comptime", language: "en", categories: ["general"], timeRange: "year" });
 for (const r of res.results) console.log(r.title, r.url, r.engines);
-// server.stop() runs on dispose: SIGTERM, then SIGKILL after 5 s
+// server.stop() runs on dispose: SIGTERM, then SIGKILL after 10 s (Windows: kills the process tree)
 ```
 
 - `startServer` picks a free port (or `port`), binds `127.0.0.1` (or `host`), and writes a minimal `settings.yml` to a temporary directory unless you pass `settingsPath`. Port, host and a random secret are passed as `SEARXNG_PORT`, `SEARXNG_BIND_ADDRESS` and `SEARXNG_SECRET`, which override the file. It rejects with `StartServerError` (including the last 8 KB of server output) if the process exits, `timeoutMs` (default 60 s) passes, or `signal` aborts. The child is killed if the Node/Bun process exits.

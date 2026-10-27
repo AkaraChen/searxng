@@ -1,6 +1,8 @@
 // Against the real binary: SEARXNG_BINARY=/path/to/searxng bun test
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import { type SearxngServer, startServer } from "../src/index.ts";
+import { spawn } from "node:child_process";
+import { join } from "node:path";
+import { createClient, type SearxngServer, startServer } from "../src/index.ts";
 
 const binary = process.env.SEARXNG_BINARY;
 
@@ -36,4 +38,30 @@ describe.skipIf(!binary)("real SearXNG binary", () => {
     await server.stop();
     expect(await server.client.health()).toBe(false);
   }, 30_000);
+});
+
+describe.skipIf(!binary)("real SearXNG binary, parent killed", () => {
+  test("the server exits when the process that started it dies", async () => {
+    const parent = spawn(process.execPath, [join(import.meta.dir, "fixtures", "start-real.ts")], {
+      env: { ...process.env, SEARXNG_BINARY: binary },
+      stdio: ["ignore", "pipe", "inherit"],
+    });
+    const url = await new Promise<string>((resolve, reject) => {
+      let out = "";
+      parent.stdout.on("data", (chunk: Buffer) => {
+        out += chunk.toString();
+        const match = /URL (\S+)/.exec(out);
+        if (match) resolve(match[1] as string);
+      });
+      parent.once("exit", (code) => reject(new Error(`parent exited with ${code} before the server was ready`)));
+    });
+    const client = createClient({ baseUrl: url });
+    expect(await client.health()).toBe(true);
+    parent.kill("SIGKILL"); // no exit handlers run; on Windows this is TerminateProcess
+    const deadline = Date.now() + 15_000;
+    while ((await client.health({ signal: AbortSignal.timeout(1000) })) && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 200));
+    }
+    expect(await client.health()).toBe(false);
+  }, 200_000);
 });

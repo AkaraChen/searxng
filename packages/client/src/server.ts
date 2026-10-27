@@ -54,8 +54,11 @@ export interface SearxngServer extends AsyncDisposable {
   /** Resolves with the exit code (or null when killed by a signal) once the process exits. */
   readonly exited: Promise<number | null>;
   /**
-   * SIGTERM, then SIGKILL after `graceMs` (default 5 s); on Windows, kills the
+   * SIGTERM, then SIGKILL after `graceMs` (default 10 s); on Windows, kills the
    * process tree at once. Removes generated settings. Idempotent.
+   *
+   * The binary's onefile launcher stops its server child itself, SIGKILLing it
+   * after 5 s; a SIGKILL to the launcher before that would orphan the child.
    */
   stop(graceMs?: number): Promise<void>;
 }
@@ -108,8 +111,11 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sea
       SEARXNG_PORT: String(port),
       SEARXNG_BIND_ADDRESS: host,
       SEARXNG_SECRET: options.secretKey ?? randomBytes(32).toString("hex"),
+      // Nothing is written to stdin: the server exits when the pipe closes,
+      // which also happens when this process dies without running exit handlers.
+      SEARXNG_EXIT_ON_STDIN_EOF: "1",
     },
-    stdio: ["ignore", "pipe", "pipe"],
+    stdio: ["pipe", "pipe", "pipe"],
     windowsHide: true,
   });
 
@@ -148,7 +154,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sea
   process.once("exit", killOnExit);
 
   let stopping: Promise<void> | undefined;
-  const stop = (graceMs = 5000) => {
+  const stop = (graceMs = 10_000) => {
     stopping ??= (async () => {
       if (!hasExited && windowsTree) {
         await new Promise((resolve) =>

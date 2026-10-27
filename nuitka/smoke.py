@@ -16,6 +16,7 @@ terminates only the bootstrap and reports how long its orphaned child lives.
 import json
 import os
 import platform
+import re
 import shutil
 import signal
 import socket
@@ -131,6 +132,9 @@ def main():
         engines = len(json.loads(body)["engines"])
         if engines < 100:
             failures.append(f"only {engines} engines loaded")
+        with open(log.name, "rb") as f:  # not log itself: the server shares its file offset
+            not_loaded = re.findall(rb"searx\.engines: \(PID \d+\) (.+?): can't register engine", f.read())
+        not_loaded = ", ".join(sorted(n.decode() for n in set(not_loaded))) or "-"
         for label, params in QUERIES:
             t0 = time.monotonic()
             try:
@@ -161,7 +165,7 @@ def main():
         "",
         f"- run on: {platform.platform(terse=True)}",
         f"- binary: {info['size'] / 1048576:.1f} MiB, built in {info['build_seconds']} s",
-        f"- start to /healthz: cold {cold:.2f} s, warm {warm:.2f} s; engines loaded: {engines}",
+        f"- start to /healthz: cold {cold:.2f} s, warm {warm:.2f} s; engines loaded: {engines} (not loaded: {not_loaded})",
         f"- terminate: exit {rc_cold} / {rc_warm}",
         *([f"- bootstrap-only terminate: orphaned server child {orphan}"] if orphan else []),
         "",
@@ -176,7 +180,7 @@ def main():
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a", encoding="utf-8") as f:
             f.write(text + "\n")
-    if failures:
+    if failures or (orphan and "survived" in orphan):
         with open(os.path.join(workdir, "server.log"), encoding="utf-8", errors="replace") as f:
             print(f.read()[-4000:])
     shutil.rmtree(workdir, ignore_errors=True)
