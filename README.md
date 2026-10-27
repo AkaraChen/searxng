@@ -3,14 +3,14 @@
 [SearXNG](https://github.com/searxng/searxng) as one self-contained executable, plus a JS client that starts it and queries its JSON API.
 
 - `nuitka/`: builds SearXNG (pinned commit, see `nuitka/build.py`) into a single [Nuitka](https://nuitka.net) onefile binary for Linux, macOS and Windows. Only the JSON API (`/search?format=json`, `/config`, `/healthz`) is a goal; the HTML UI is left out.
-- `packages/client` (`@akarachen/searxng`): `startServer()` spawns the binary and waits until it is ready; `createClient()` is a hand-written, typed client for the JSON API. SearXNG publishes no OpenAPI spec, so there is nothing to generate from.
+- `packages/client` (`@searxng-js/searxng`): `startServer()` spawns the binary and waits until it is ready; `createClient()` is a hand-written, typed client for the JSON API. SearXNG publishes no OpenAPI spec, so there is nothing to generate from.
 
 CI (`.github/workflows/ci.yml`) builds the binary on `ubuntu-22.04` (x64), `macos-26` (arm64) and `windows-2025` (x64), smoke-tests it (`nuitka/smoke.py`), runs the client tests against it, and uploads it as an artifact. Linux builds on the oldest supported Ubuntu for its glibc floor (see Portability); a `linux-test` job runs that binary on `ubuntu-26.04` as well. Each job's numbers are in its run summary.
 
 ## Client
 
 ```ts
-import { startServer } from "@akarachen/searxng";
+import { startServer } from "@searxng-js/searxng";
 
 await using server = await startServer({ binaryPath: "/path/to/searxng" }); // or $SEARXNG_BINARY
 const res = await server.client.search({ q: "zig comptime", language: "en", categories: ["general"], timeRange: "year" });

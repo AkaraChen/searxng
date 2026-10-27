@@ -1,5 +1,5 @@
 {
-  "name": "@akarachen/searxng",
+  "name": "@searxng-js/searxng",
   "version": "0.1.0",
   "description": "Start a SearXNG binary and query its JSON API with a typed client",
   "license": "AGPL-3.0-or-later",

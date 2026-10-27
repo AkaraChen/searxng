@@ -6,7 +6,7 @@
       "name": "searxng-monorepo",
     },
     "packages/client": {
-      "name": "@akarachen/searxng",
+      "name": "@searxng-js/searxng",
       "version": "0.1.0",
       "devDependencies": {
         "@types/bun": "latest",
@@ -16,7 +16,7 @@
     },
   },
   "packages": {
-    "@akarachen/searxng": ["@akarachen/searxng@workspace:packages/client"],
+    "@searxng-js/searxng": ["@searxng-js/searxng@workspace:packages/client"],
 
     "@types/bun": ["@types/bun@1.4.4", "", { "dependencies": { "bun-types": "1.4.4" } }, "sha512-9wkRDXUXK124pEnAutE6n/l18j+i9GC5IAHK8TmX/2nlySETmky0OU6yL5U8pW1AoKh++AN9auDCr647BfurjQ=="],
 
