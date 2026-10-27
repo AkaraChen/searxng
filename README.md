@@ -9,6 +9,10 @@ CI (`.github/workflows/ci.yml`) builds the binary on `ubuntu-22.04` (x64), `maco
 
 ## Client
 
+```sh
+npm install @searxng-js/searxng   # or bun add / pnpm add; brings the binary for your platform
+```
+
 ```ts
 import { startServer } from "@searxng-js/searxng";
 
