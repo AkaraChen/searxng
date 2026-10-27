@@ -5,7 +5,7 @@
 - `nuitka/`: builds SearXNG (pinned commit, see `nuitka/build.py`) into a single [Nuitka](https://nuitka.net) onefile binary for Linux, macOS and Windows. Only the JSON API (`/search?format=json`, `/config`, `/healthz`) is a goal; the HTML UI is left out.
 - `packages/client` (`@akarachen/searxng`): `startServer()` spawns the binary and waits until it is ready; `createClient()` is a hand-written, typed client for the JSON API. SearXNG publishes no OpenAPI spec, so there is nothing to generate from.
 
-CI (`.github/workflows/ci.yml`) builds the binary on `ubuntu-22.04` (x64), `macos-14` (arm64) and `windows-2022` (x64), smoke-tests it (`nuitka/smoke.py`), runs the client tests against it, and uploads it as an artifact. Each job's numbers are in its run summary.
+CI (`.github/workflows/ci.yml`) builds the binary on `ubuntu-22.04` (x64), `macos-26` (arm64) and `windows-2025` (x64), smoke-tests it (`nuitka/smoke.py`), runs the client tests against it, and uploads it as an artifact. Linux builds on the oldest supported Ubuntu for its glibc floor (see Portability); a `linux-test` job runs that binary on `ubuntu-26.04` as well. Each job's numbers are in its run summary.
 
 ## Client
 
@@ -18,7 +18,8 @@ for (const r of res.results) console.log(r.title, r.url, r.engines);
 // server.stop() runs on dispose: SIGTERM, then SIGKILL after 10 s (Windows: kills the process tree)
 ```
 
-- `startServer` picks a free port (or `port`), binds `127.0.0.1` (or `host`), and writes a minimal `settings.yml` to a temporary directory unless you pass `settingsPath`. Port, host and a random secret are passed as `SEARXNG_PORT`, `SEARXNG_BIND_ADDRESS` and `SEARXNG_SECRET`, which override the file. It rejects with `StartServerError` (including the last 8 KB of server output) if the process exits, `timeoutMs` (default 60 s) passes, or `signal` aborts. The child is killed if the Node/Bun process exits.
+- `startServer` picks a free port (or `port`), binds `127.0.0.1` (or `host`), and writes a minimal `settings.yml` to a temporary directory unless you pass `settingsPath`. Port, host and a random secret are passed as `SEARXNG_PORT`, `SEARXNG_BIND_ADDRESS` and `SEARXNG_SECRET`, which override the file. It rejects with `StartServerError` (including the last 8 KB of server output) if the process exits, `timeoutMs` (default 60 s) passes, or `signal` aborts.
+- The server does not outlive its parent. `stop()` and an exit handler end it (on Windows by killing the process tree, since the binary is a launcher plus a server child). If the Node/Bun process dies without running exit handlers, e.g. on SIGKILL, the server exits too: it gets a stdin pipe and `SEARXNG_EXIT_ON_STDIN_EOF=1`, so it stops when the pipe closes. The integration tests cover both on all three platforms.
 - `createClient({ baseUrl })` exposes `search(params)`, `config()` and `health()`. Params are camelCase (`page`, `timeRange`, `safeSearch`); lists are joined with commas. Responses keep SearXNG's field names. Non-2xx responses throw `SearxngError` with `status` and SearXNG's `error` message. The default per-request timeout is 30 s, and it combines with a caller's `signal`.
 - Runs on Node ≥ 20.3 and Bun. `bun test` runs the unit tests (a fake server stands in for SearXNG). `SEARXNG_BINARY=… bun test` also runs the integration tests against a real binary.
 
@@ -32,7 +33,33 @@ python build.py build                       # -> build/searxng[.exe], build/buil
 python smoke.py                             # binary + settings.yml in an empty dir, ~8 queries
 ```
 
-You need Python 3.13 and a C compiler (gcc/clang; MSVC on Windows). Run `build/searxng` next to a `settings.yml` (see `nuitka/settings.yml`), or set `SEARXNG_SETTINGS_PATH`. On the first start it unpacks itself to `<user cache dir>/searxng/<version>-<hash>/` (`~/.cache` on Linux, `~/Library/Caches` on macOS, `%LOCALAPPDATA%` on Windows). Later starts reuse that directory. The hash covers everything that goes into the binary, so a new build never reuses a stale extraction.
+You need Python 3.13 and a C compiler (gcc/clang; MSVC on Windows). Run `build/searxng` next to a `settings.yml` (see `nuitka/settings.yml`), or set `SEARXNG_SETTINGS_PATH`. On the first start it unpacks itself to `<user cache dir>/searxng/<version>-<hash>/` (`$XDG_CACHE_HOME` or else `~/.cache` on Linux and macOS, `%LOCALAPPDATA%` on Windows). Later starts reuse that directory. The hash covers everything that goes into the binary (sources, flags, installed package versions), so a new build never reuses a stale extraction.
+
+## Results in CI
+
+From [run 40517037308](https://github.com/AkaraChen/searxng/actions/runs/40517037308) (commit `54eec30`), via `smoke.py` on GitHub-hosted runners. Starts are timed until `/healthz` answers. "Cold" means the extraction cache was removed first; "warm" is the second start. Every binary has the same default build flags (no `--trim-babel`). "Engines" is how many engines `/config` lists; on every platform only `ahmia` and `torch` are missing, as onion engines need `outgoing.using_tor_proxy`.
+
+| platform | built on | run on | size | cold | warm | engines | smoke | client tests |
+|---|---|---|---|---|---|---|---|---|
+| linux-x64 | ubuntu-22.04 (glibc 2.35) | ubuntu-22.04 | 32.0 MiB | 1.71 s | 1.31 s | 261 | OK | 18/18 |
+| linux-x64 | (same binary) | ubuntu-26.04 (glibc 2.43) | 32.0 MiB | 1.72 s | 1.41 s | 261 | OK | 18/18 |
+| darwin-arm64 | macos-26 | macos-26 | 28.1 MiB | 1.96 s | 1.49 s | 261 | OK | 18/18 |
+| win32-x64 | windows-2025 | windows-2025 | 26.1 MiB | 3.81 s | 1.51 s | 261 | OK | 18/18 |
+
+Results plus infoboxes per smoke query, from the same run. Only the Wikipedia query is enforced. From CI IP ranges, DuckDuckGo, Google News and Reuters are usually listed as unresponsive, and Brave sometimes is; the other engines carry the results.
+
+| query | linux (22.04) | linux (26.04) | macOS | Windows |
+|---|---|---|---|---|
+| wikipedia (`engines=wikipedia`) | 1 | 1 | 1 | 1 |
+| general: `rust borrow checker` | 37 | 37 | 37 | 37 |
+| news: `climate summit` | 81 | 81 | 81 | 80 |
+| images: `golden gate bridge` | 354 | 345 | 344 | 345 |
+| `site:github.com nuitka onefile` | 30 | 30 | 31 | 30 |
+| zh-CN: `量子计算` | 40 | 40 | 40 | 40 |
+| ja: `東京 ラーメン` | 20 | 20 | 20 | 20 |
+| de: `Wetter Berlin` | 24 | 26 | 24 | 23 |
+
+Build time on the runners: Linux 8 min, macOS 14 min, Windows 22 min (no compiler cache).
 
 ## Results (Linux x86-64, measured locally)
 
@@ -69,6 +96,8 @@ Notes:
 - **Static files:** settings validation requires `ui.static_path` to be a directory, so `run.py` creates an empty `searx/static` in the extraction directory.
 - **Version:** `searx.version freeze` runs at build time, so the binary does not run `git` at every start.
 - **Untrimmed builds** also need `--include-module=pygments.formatters.html`. pygments loads formatters lazily and Nuitka's config doesn't cover that.
+- **Stopping.** The binary is a onefile launcher that runs the server as a child. On SIGTERM the launcher sends the child SIGINT and SIGKILLs it 5 s later. On macOS the child's default KeyboardInterrupt shutdown took longer than that, so a client that SIGKILLed the launcher after its own 5 s orphaned the child. `run.py` now exits at once on SIGINT/SIGTERM, and the client waits 10 s before SIGKILL. On Windows, terminating the launcher does not end the child: in CI it was still serving 30 s later, even though Nuitka's runtime is meant to stop the child when the launcher dies. Kill the process tree there (`taskkill /T /F /PID <pid>`), as the client does. Independently, `SEARXNG_EXIT_ON_STDIN_EOF=1` makes the server exit when stdin closes, which covers a parent that dies without cleaning up.
+- **Time zones on Windows.** Windows has no system time zone database, so `zoneinfo` needs the `tzdata` package. Without it the `bilibili` engine failed to load, and the weather answerer and `time_zone` plugin had no zones. The Windows build installs it, and Nuitka bundles it.
 
 ## Risk
 
@@ -93,11 +122,11 @@ All trims are build flags, two small Nuitka user plugins (`strip_plugin.py`, `ba
 
 ## Portability
 
-- **Linux:** the binary needs the build host's glibc or newer, because Nuitka-compiled code picks up the host's symbol versions. A local build on glibc 2.43 needs `GLIBC_2.38`; the CI build on ubuntu-22.04 should need about 2.35. The bundled extensions need ≤ 2.28 (lxml is `manylinux_2_28`, curl_cffi and libpython 2.17). To get a 2.28 floor, build in a `manylinux_2_28` container.
+- **Linux:** the binary needs the build host's glibc or newer, because Nuitka-compiled code picks up the host's symbol versions. A local build on glibc 2.43 needs `GLIBC_2.38`. The CI build on ubuntu-22.04 needs `GLIBC_2.35` at most (checked with `objdump -T` on the binary and every unpacked `.so`), so it runs on Ubuntu 22.04, Debian 12 and newer; CI also tests it on ubuntu-26.04. The bundled extensions need ≤ 2.28 (lxml is `manylinux_2_28`, curl_cffi and libpython 2.17). To get a 2.28 floor, build in a `manylinux_2_28` container.
 - **musl/static:** not realistic. curl_cffi has musllinux wheels, but Nuitka onefile, python-build-standalone's static musl build and extension modules don't combine into a working fully static binary. Use the glibc build or a container.
 - **arm64 Linux:** the same build on an arm64 runner. All wheels exist for aarch64; it is not in CI yet.
-- **macOS:** built on arm64 in CI. x86-64 would need a macos-13 runner. Not signed or notarized, so a downloaded binary needs `xattr -d com.apple.quarantine`.
-- **Windows:** x64 in CI with MSVC. `pwd` is stubbed. Terminating the bootstrap must also end the child; `smoke.py` checks that the port is released.
+- **macOS:** built and tested on arm64 (`macos-26`) in CI. x86-64 would need an Intel runner (`macos-15-intel` or `macos-26-intel`). Not signed or notarized, so a downloaded binary needs `xattr -d com.apple.quarantine`.
+- **Windows:** x64 on `windows-2025` with MSVC from Visual Studio 2026. `pwd` is stubbed and `tzdata` is bundled. Stop the server by killing the process tree, not just the launcher (see Stopping). `smoke.py` does that and checks that the port is released; it also terminates only the launcher once and reports how long the orphaned child lives.
 
 ## Licences
 
@@ -121,4 +150,4 @@ Estimates are compressed sizes on Linux.
 
 ## Verdict
 
-At most 50 MB is easily achievable: 33.8 MiB with low-risk trims, or 29 MiB if non-listed languages may fall back to English. The cost is not size but fidelity work: two real breakages (engine loading, the error recorder) only showed up in the compiled build, and every SearXNG upgrade needs the CI smoke test. Compared with the official Docker image (about 98 MB, needs Docker) or a portable Python plus venv (about 150–200 MB unpacked, starts faster, no compile step), the single binary is worth it for embedding: one file per platform, no runtime dependency, started by `startServer()`. It is not worth it if sex can ship a directory, in which case the standalone dist without onefile is the better trade-off.
+At most 50 MB is easily achievable: 33.8 MiB with low-risk trims (in CI: 32.0 MiB on Linux, 28.1 MiB on macOS, 26.1 MiB on Windows), or 29 MiB if non-listed languages may fall back to English. The cost is not size but fidelity work: two real breakages (engine loading, the error recorder) only showed up in the compiled build, and every SearXNG upgrade needs the CI smoke test. Compared with the official Docker image (about 98 MB, needs Docker) or a portable Python plus venv (about 150–200 MB unpacked, starts faster, no compile step), the single binary is worth it for embedding: one file per platform, no runtime dependency, started by `startServer()`. It is not worth it if sex can ship a directory, in which case the standalone dist without onefile is the better trade-off.
