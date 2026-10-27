@@ -38,7 +38,7 @@ The tag must match `packages/client/package.json`'s version; versions with a `-s
 First release: npm can only trust a package that exists, and a new trust configuration expires unless it publishes within 2 days. So:
 
 1. Run the release workflow by hand and let it pass.
-2. As an owner of the `@searxng-js` npm org, with 2FA and npm 11.15 or newer: `bun scripts/bootstrap-npm.ts` (try `--dry-run` first). It logs in through the browser in a throwaway npm config, publishes a deprecated placeholder `0.0.0` of each package, and trusts `release.yml` of this repository (environment `npm`) for each.
+2. Logged in to npm (`npm login`) as an owner of the `@searxng-js` org, with 2FA and npm 11.15 or newer: `bun scripts/bootstrap-npm.ts` (try `--dry-run` first). It publishes a deprecated placeholder `0.0.0` of each package and trusts `release.yml` of this repository (environment `npm`) for each.
 3. Within 2 days: `git tag v0.1.0 && git push origin v0.1.0`.
 
 ## Building the binary
