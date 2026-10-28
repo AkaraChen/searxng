@@ -2,13 +2,39 @@
 # Settings: $SEARXNG_SETTINGS_PATH, else settings.yml next to the executable.
 # SEARXNG_EXIT_ON_STDIN_EOF=1: exit when stdin closes, i.e. when the process
 # holding the other end of a stdin pipe dies (used by the JS client).
+# SEARXNG_EXTRACTION_RECORD=<file>: when started by the onefile launcher, write
+# {"executable": <the extracted server executable>} there (used by the JS client).
 import importlib.util
+import json
 import os
 import signal
 import sys
 import threading
 
 import sxng_stubs
+
+
+# The onefile launcher extracts the payload (or checks an earlier extraction,
+# file by file) and then runs the server executable from it as its child. That
+# executable also runs on its own, without the launcher's ~0.5 s and ~35 MiB,
+# so the JS client starts it directly once it knows where it is. The launcher
+# starts this process only after the extraction is complete.
+def _write_extraction_record(record):
+    exe = os.path.join(os.path.dirname(os.path.abspath(__file__)), "searxng.exe" if sys.platform == "win32" else "searxng.bin")
+    if not os.path.isfile(exe):
+        return
+    temp = f"{record}.{os.getpid()}.tmp"
+    try:
+        os.makedirs(os.path.dirname(record), exist_ok=True)
+        with open(temp, "w", encoding="utf-8") as f:
+            json.dump({"executable": exe}, f)
+        os.replace(temp, record)
+    except OSError as e:
+        print(f"searxng: cannot write {record}: {e}", file=sys.stderr, flush=True)
+
+
+if os.environ.get("SEARXNG_EXTRACTION_RECORD") and os.environ.get("NUITKA_ONEFILE_PARENT"):
+    _write_extraction_record(os.environ["SEARXNG_EXTRACTION_RECORD"])
 
 os.environ.setdefault(
     "SEARXNG_SETTINGS_PATH", os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "settings.yml")

@@ -30,6 +30,8 @@ VERSION = "2026.10.27.0"
 SEARXNG_DIR = os.path.join(HERE, "searxng")
 OUT_DIR = os.path.join(HERE, "build")
 EXE = "searxng.exe" if sys.platform == "win32" else "searxng"
+# The server executable inside the onefile payload (and the extraction directory).
+SERVER_EXE = "searxng.exe" if sys.platform == "win32" else "searxng.bin"
 
 
 def run(cmd, **kwargs):
@@ -72,6 +74,8 @@ def nuitka_flags(trim_babel):
         # its error recorder reads source lines of the failing frame
         # (inspect.trace().code_context), which are None without the files.
         "--include-package-data=searx:*.py",
+        # ...with precompiled .pyc files, so that no start compiles them.
+        f"--user-plugin={os.path.join(HERE, 'pyc_plugin.py')}",
         # Imported at module level but never called by the JSON API;
         # sxng_stubs.py stands in for them. Nuitka's own config would otherwise
         # pull in every pygments lexer (~125 MB of generated C).
@@ -96,7 +100,15 @@ def cache_key(flags):
     # The onefile payload is extracted once to {CACHE_DIR}/searxng/<key> and
     # reused; the key changes whenever anything that goes into the binary does.
     h = hashlib.sha256()
-    for name in ("run.py", "sxng_stubs.py", "build.py", "strip_plugin.py", "babel_plugin.py", "settings.yml"):
+    for name in (
+        "run.py",
+        "sxng_stubs.py",
+        "build.py",
+        "strip_plugin.py",
+        "pyc_plugin.py",
+        "babel_plugin.py",
+        "settings.yml",
+    ):
         with open(os.path.join(HERE, name), "rb") as f:
             h.update(f.read())
     # Installed versions too: SearXNG's dependencies, Nuitka, tzdata on Windows.
@@ -175,11 +187,14 @@ def build(trim_babel, extra):
     start = time.monotonic()
     run([sys.executable, "-m", "nuitka", *flags, os.path.join(HERE, "run.py")], env=env, cwd=OUT_DIR)
     binary = os.path.join(OUT_DIR, EXE)
+    if not os.path.isfile(os.path.join(OUT_DIR, "run.dist", SERVER_EXE)):
+        sys.exit(f"run.dist/{SERVER_EXE} is missing; run.py and smoke.py expect the server executable there")
     info = {
         "binary": binary,
         "size": os.path.getsize(binary),
         "build_seconds": round(time.monotonic() - start),
         "cache_subdir": f"searxng/{key}",
+        "server_executable": SERVER_EXE,
         "searxng_commit": SEARXNG_COMMIT,
         "platform": f"{sys.platform}-{platform.machine().lower()}",
         "python": platform.python_version(),

@@ -1,6 +1,8 @@
 // Stands in for the SearXNG binary in startServer tests.
 // FAKE_MODE: "ok" (default) | "crash" (exit 3 at once) | "never-ready" (no /healthz)
-import { existsSync } from "node:fs";
+// FAKE_EXTRACTED=<path>: record <path> as the extracted server executable, as
+// the binary's run.py does under the onefile launcher.
+import { existsSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 
 const mode = process.env.FAKE_MODE ?? "ok";
@@ -11,6 +13,10 @@ if (mode === "crash") {
 if (!process.env.SEARXNG_SETTINGS_PATH || !existsSync(process.env.SEARXNG_SETTINGS_PATH)) {
   console.error("fake: missing settings");
   process.exit(4);
+}
+
+if (process.env.FAKE_EXTRACTED && process.env.SEARXNG_EXTRACTION_RECORD) {
+  writeFileSync(process.env.SEARXNG_EXTRACTION_RECORD, JSON.stringify({ executable: process.env.FAKE_EXTRACTED }));
 }
 
 createServer((req, res) => {

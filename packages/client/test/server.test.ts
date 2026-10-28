@@ -1,5 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { StartServerError, startServer } from "../src/index.ts";
 
@@ -64,4 +66,44 @@ describe("startServer (fake binary)", () => {
     const server = await startServer({ ...fake, settingsPath });
     await server.stop();
   });
+});
+
+// Shell scripts stand in for the extracted server executable.
+describe.skipIf(process.platform === "win32")("startServer reuses the extraction (fake binary)", () => {
+  test("runs the recorded executable, and the binary when that fails", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "searxng-extracted-"));
+    const savedCache = process.env.XDG_CACHE_HOME;
+    process.env.XDG_CACHE_HOME = join(dir, "cache");
+    try {
+      // extractedServer() writes no directories; run.py creates the record's.
+      await mkdir(join(dir, "cache", "searxng-js", "extracted"), { recursive: true });
+      const extracted = join(dir, "searxng.bin");
+      await writeFile(extracted, `#!/bin/sh\nexec "${process.execPath}" "$@"\n`);
+      await chmod(extracted, 0o755);
+      const env = { FAKE_EXTRACTED: extracted };
+
+      let server = await startServer({ ...fake, env });
+      expect(server.executable).toBe(process.execPath); // no record yet
+      await server.stop();
+
+      server = await startServer({ ...fake, env });
+      expect(server.executable).toBe(extracted);
+      expect(await server.client.health()).toBe(true);
+      await server.stop();
+
+      server = await startServer({ ...fake, env, reuseExtraction: false });
+      expect(server.executable).toBe(process.execPath);
+      await server.stop();
+
+      await writeFile(extracted, "#!/bin/sh\nexit 7\n"); // a damaged extraction
+      server = await startServer({ ...fake, env });
+      expect(server.executable).toBe(process.execPath);
+      expect(await server.client.health()).toBe(true);
+      await server.stop();
+    } finally {
+      if (savedCache === undefined) delete process.env.XDG_CACHE_HOME;
+      else process.env.XDG_CACHE_HOME = savedCache;
+      await rm(dir, { recursive: true, force: true });
+    }
+  }, 30_000);
 });

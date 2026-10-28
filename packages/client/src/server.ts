@@ -4,7 +4,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { prepareBinary, resolveBinary } from "./binary.ts";
+import { extractedServer, prepareBinary, resolveBinary } from "./binary.ts";
 import { createClient, type SearxngClient } from "./client.ts";
 
 /** Settings used when no `settingsPath` is given: JSON API on, no limiter, no valkey. */
@@ -44,6 +44,13 @@ export interface StartServerOptions {
   env?: Record<string, string>;
   /** How long to wait for `/healthz`; default 60 s (the first start unpacks the binary). */
   timeoutMs?: number;
+  /**
+   * Run the server executable that an earlier start of the binary extracted,
+   * without the binary's onefile launcher (about 0.5 s faster, 35 MiB less).
+   * Falls back to the binary when there is none or it exits before it is ready.
+   * Default: true.
+   */
+  reuseExtraction?: boolean;
   /** Aborting before the server is ready kills it and rejects. */
   signal?: AbortSignal;
   /** Server output (stdout and stderr), as it arrives. */
@@ -54,6 +61,8 @@ export interface SearxngServer extends AsyncDisposable {
   readonly url: string;
   readonly port: number;
   readonly pid: number;
+  /** What was spawned: the binary, or the server executable it extracted earlier. */
+  readonly executable: string;
   readonly client: SearxngClient;
   /** Resolves with the exit code (or null when killed by a signal) once the process exits. */
   readonly exited: Promise<number | null>;
@@ -61,8 +70,9 @@ export interface SearxngServer extends AsyncDisposable {
    * SIGTERM, then SIGKILL after `graceMs` (default 10 s); on Windows, kills the
    * process tree at once. Removes generated settings. Idempotent.
    *
-   * The binary's onefile launcher stops its server child itself, SIGKILLing it
-   * after 5 s; a SIGKILL to the launcher before that would orphan the child.
+   * When the binary runs, its onefile launcher stops its server child itself,
+   * SIGKILLing it after 5 s; a SIGKILL to the launcher before that would orphan
+   * the child.
    */
   stop(graceMs?: number): Promise<void>;
 }
@@ -100,6 +110,7 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sea
   } catch (err) {
     throw new StartServerError(`cannot start SearXNG: ${(err as Error).message}`, "");
   }
+  const extraction = options.reuseExtraction === false ? undefined : await extractedServer(binaryPath).catch(() => undefined);
   options.signal?.throwIfAborted();
   const host = options.host ?? "127.0.0.1";
   const port = options.port ?? (await freePort(host));
@@ -111,102 +122,133 @@ export async function startServer(options: StartServerOptions = {}): Promise<Sea
     settingsPath = join(tempDir, "settings.yml");
     await writeFile(settingsPath, DEFAULT_SETTINGS);
   }
-
-  const child: ChildProcess = spawn(binaryPath, options.args ?? [], {
-    env: {
-      ...process.env,
-      ...options.env,
-      SEARXNG_SETTINGS_PATH: settingsPath,
-      SEARXNG_PORT: String(port),
-      SEARXNG_BIND_ADDRESS: host,
-      SEARXNG_SECRET: options.secretKey ?? randomBytes(32).toString("hex"),
-      // Nothing is written to stdin: the server exits when the pipe closes,
-      // which also happens when this process dies without running exit handlers.
-      SEARXNG_EXIT_ON_STDIN_EOF: "1",
-    },
-    stdio: ["pipe", "pipe", "pipe"],
-    windowsHide: true,
-  });
-
-  let output = "";
-  const onData = (chunk: Buffer) => {
-    const text = chunk.toString();
-    output = (output + text).slice(-8192);
-    options.onOutput?.(text);
+  const removeTempDir = async () => {
+    if (tempDir) await rm(tempDir, { recursive: true, force: true });
   };
-  child.stdout?.on("data", onData);
-  child.stderr?.on("data", onData);
 
-  let spawnError: Error | undefined;
-  const exited = new Promise<number | null>((resolve) => {
-    child.once("error", (err) => {
-      spawnError = err;
-      resolve(null);
+  const env = {
+    ...process.env,
+    ...options.env,
+    SEARXNG_SETTINGS_PATH: settingsPath,
+    SEARXNG_PORT: String(port),
+    SEARXNG_BIND_ADDRESS: host,
+    SEARXNG_SECRET: options.secretKey ?? randomBytes(32).toString("hex"),
+    // Nothing is written to stdin: the server exits when the pipe closes,
+    // which also happens when this process dies without running exit handlers.
+    SEARXNG_EXIT_ON_STDIN_EOF: "1",
+    ...(extraction ? { SEARXNG_EXTRACTION_RECORD: extraction.record } : {}),
+  };
+  const timeoutMs = options.timeoutMs ?? 60_000;
+  const deadline = Date.now() + timeoutMs;
+
+  const launch = async (executable: string): Promise<SearxngServer> => {
+    const child: ChildProcess = spawn(executable, options.args ?? [], {
+      env,
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
     });
-    child.once("exit", (code) => resolve(code));
-  });
-  let hasExited = false;
-  void exited.then(() => {
-    hasExited = true;
-  });
 
-  // On Windows, kill() is TerminateProcess on the onefile bootstrap only and
-  // its server child keeps running (and holding the port): kill the tree.
-  const taskkill = ["/pid", String(child.pid), "/T", "/F"];
-  const windowsTree = process.platform === "win32" && child.pid !== undefined;
+    let output = "";
+    const onData = (chunk: Buffer) => {
+      const text = chunk.toString();
+      output = (output + text).slice(-8192);
+      options.onOutput?.(text);
+    };
+    child.stdout?.on("data", onData);
+    child.stderr?.on("data", onData);
 
-  // Do not leave the server behind when this process exits.
-  const killOnExit = () => {
-    if (windowsTree) spawnSync("taskkill", taskkill, { stdio: "ignore", windowsHide: true });
-    child.kill("SIGKILL");
-  };
-  process.once("exit", killOnExit);
+    let spawnError: Error | undefined;
+    const exited = new Promise<number | null>((resolve) => {
+      child.once("error", (err) => {
+        spawnError = err;
+        resolve(null);
+      });
+      child.once("exit", (code) => resolve(code));
+    });
+    let hasExited = false;
+    void exited.then(() => {
+      hasExited = true;
+    });
 
-  let stopping: Promise<void> | undefined;
-  const stop = (graceMs = 10_000) => {
-    stopping ??= (async () => {
-      if (!hasExited && windowsTree) {
-        await new Promise((resolve) =>
-          spawn("taskkill", taskkill, { stdio: "ignore", windowsHide: true })
-            .once("error", resolve)
-            .once("exit", resolve),
-        );
+    // On Windows, kill() is TerminateProcess on the onefile bootstrap only and
+    // its server child keeps running (and holding the port): kill the tree.
+    const taskkill = ["/pid", String(child.pid), "/T", "/F"];
+    const windowsTree = process.platform === "win32" && child.pid !== undefined;
+
+    // Do not leave the server behind when this process exits.
+    const killOnExit = () => {
+      if (windowsTree) spawnSync("taskkill", taskkill, { stdio: "ignore", windowsHide: true });
+      child.kill("SIGKILL");
+    };
+    process.once("exit", killOnExit);
+
+    let killing: Promise<void> | undefined;
+    const kill = (graceMs: number) => {
+      killing ??= (async () => {
+        if (!hasExited && windowsTree) {
+          await new Promise((resolve) =>
+            spawn("taskkill", taskkill, { stdio: "ignore", windowsHide: true })
+              .once("error", resolve)
+              .once("exit", resolve),
+          );
+        }
+        if (!hasExited) {
+          child.kill("SIGTERM");
+          const timer = setTimeout(() => child.kill("SIGKILL"), graceMs);
+          await exited;
+          clearTimeout(timer);
+        }
+        process.removeListener("exit", killOnExit);
+      })();
+      return killing;
+    };
+
+    const url = `http://${host.includes(":") ? `[${host}]` : host}:${port}`;
+    const client = createClient({ baseUrl: url });
+    try {
+      while (!(await client.health({ signal: AbortSignal.timeout(2000) }))) {
+        if (spawnError) throw new StartServerError(`cannot start ${executable}: ${spawnError.message}`, output);
+        if (hasExited) throw new StartServerError(`SearXNG exited with code ${child.exitCode} before it was ready`, output);
+        options.signal?.throwIfAborted();
+        if (Date.now() > deadline) throw new StartServerError(`SearXNG did not answer /healthz within ${timeoutMs} ms`, output);
+        await sleep(100);
       }
-      if (!hasExited) {
-        child.kill("SIGTERM");
-        const timer = setTimeout(() => child.kill("SIGKILL"), graceMs);
-        await exited;
-        clearTimeout(timer);
-      }
-      process.removeListener("exit", killOnExit);
-      if (tempDir) await rm(tempDir, { recursive: true, force: true });
-    })();
-    return stopping;
-  };
-
-  const url = `http://${host.includes(":") ? `[${host}]` : host}:${port}`;
-  const client = createClient({ baseUrl: url });
-  const deadline = Date.now() + (options.timeoutMs ?? 60_000);
-  try {
-    while (!(await client.health({ signal: AbortSignal.timeout(2000) }))) {
-      if (spawnError) throw new StartServerError(`cannot start ${binaryPath}: ${spawnError.message}`, output);
-      if (hasExited) throw new StartServerError(`SearXNG exited with code ${child.exitCode} before it was ready`, output);
-      options.signal?.throwIfAborted();
-      if (Date.now() > deadline) throw new StartServerError(`SearXNG did not answer /healthz within ${options.timeoutMs ?? 60_000} ms`, output);
-      await sleep(100);
+    } catch (err) {
+      await kill(0);
+      throw err;
     }
+
+    let stopping: Promise<void> | undefined;
+    const stop = (graceMs = 10_000) => {
+      stopping ??= kill(graceMs).then(removeTempDir);
+      return stopping;
+    };
+    return {
+      url,
+      port,
+      pid: child.pid as number,
+      executable,
+      client,
+      exited,
+      stop,
+      [Symbol.asyncDispose]: () => stop(),
+    };
+  };
+
+  try {
+    if (extraction?.executable) {
+      try {
+        return await launch(extraction.executable);
+      } catch (err) {
+        if (options.signal?.aborted || Date.now() > deadline) throw err;
+        // The extraction may be damaged: the binary checks every file of it and
+        // repairs what differs. It writes a new record once it runs.
+        await rm(extraction.record, { force: true });
+      }
+    }
+    return await launch(binaryPath);
   } catch (err) {
-    await stop(0);
+    await removeTempDir();
     throw err;
   }
-
-  return {
-    url,
-    port,
-    pid: child.pid as number,
-    client,
-    exited,
-    stop,
-    [Symbol.asyncDispose]: () => stop(),
-  };
 }
