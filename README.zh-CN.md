@@ -24,7 +24,7 @@ SearXNG 是开源的元搜索引擎：把一次查询同时发给多个搜索引
 
 本仓库把它变成一个可以直接装的依赖：
 
-- **每个平台一个可执行文件。** 用 [Nuitka](https://nuitka.net) 把 SearXNG 连同 Python 运行时编译成单个文件，26–32 MiB，机器上不需要预装任何东西。
+- **每个平台一个可执行文件。** 用 [Nuitka](https://nuitka.net) 把 SearXNG 连同 Python 运行时编译成单个文件，21–23 MiB，机器上不需要预装任何东西。
 - **npm 包 `@searxng-js/searxng`。** 自动带上对应平台的二进制，负责启动、等待就绪、退出时关闭；另附 SearXNG JSON API 的类型化客户端。
 
 ## 能带来什么
@@ -153,7 +153,7 @@ const client = createClient({ baseUrl: "https://searx.example.org" });   // 该�
 
 | | 本项目 | 官方 Docker 镜像 | Python venv |
 |---|---|---|---|
-| 体积 | 26–32 MiB，单个文件 | 约 98 MB，另需 Docker | 解压后约 150–200 MB |
+| 体积 | 21–23 MiB，单个文件 | 约 98 MB，另需 Docker | 解压后约 150–200 MB |
 | 机器上需要 | 无 | Docker | Python 3 |
 | 启动 | Linux 上约 0.6 秒（首次最长约 4 秒） | 容器启动时间 | 约 0.6 秒 |
 | 生命周期 | 跟随你的进程 | 需自行管理 | 需自行管理 |
@@ -164,7 +164,7 @@ const client = createClient({ baseUrl: "https://searx.example.org" });   // 该�
 - **不支持 valkey/redis。** 设置 `valkey.url` 会导致服务启动失败，因此也没有基于 valkey 的 limiter。
 - **搜索引擎可能封禁或限流**，这点与任何 SearXNG 实例相同。云服务器和 CI 的 IP 更容易被封，请留意 `unresponsive_engines`。
 - **预编译二进制只有 linux-x64（glibc）、darwin-arm64、win32-x64。** macOS 二进制未签名、未公证。
-- **内存：** Linux 上 RSS 约 125 MiB；编译后的代码更占内存，比从源码运行 SearXNG（约 87 MiB）多。
+- **内存：** Linux 上空闲时 RSS 约 95 MiB，搜索几次后约 120 MiB，和从源码运行 SearXNG（约 80 和 115 MiB）接近。少启用一些引擎（配置里的 `use_default_settings.engines.keep_only`）还能更省。
 
 ## 从源码构建
 

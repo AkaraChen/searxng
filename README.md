@@ -24,7 +24,7 @@ SearXNG is an open-source metasearch engine. It sends your query to many search 
 
 This repository turns it into something you can add as a dependency:
 
-- **A single executable per platform.** SearXNG and its Python runtime compiled with [Nuitka](https://nuitka.net) into one file of 26–32 MiB. Nothing to install on the machine.
+- **A single executable per platform.** SearXNG and its Python runtime compiled with [Nuitka](https://nuitka.net) into one file of 21–23 MiB. Nothing to install on the machine.
 - **An npm package, `@searxng-js/searxng`.** It brings the right binary for your platform, starts it, waits until it is ready and stops it again. It also includes a typed client for SearXNG's JSON API.
 
 ## Why use it
@@ -153,7 +153,7 @@ The details are in [docs/internals.md](docs/internals.md): the size and startup 
 
 | | this package | official Docker image | Python venv |
 |---|---|---|---|
-| size | 26–32 MiB, one file | about 98 MB, plus Docker | about 150–200 MB unpacked |
+| size | 21–23 MiB, one file | about 98 MB, plus Docker | about 150–200 MB unpacked |
 | needs on the machine | nothing | Docker | Python 3 |
 | startup | about 0.6 s on Linux (up to 4 s the first time) | container start | about 0.6 s |
 | lifecycle | tied to your process | you manage it | you manage it |
@@ -164,7 +164,7 @@ The details are in [docs/internals.md](docs/internals.md): the size and startup 
 - **No valkey/redis.** Setting `valkey.url` makes the server fail at startup, so there is no limiter backed by valkey.
 - **Engines can block or rate-limit you**, as with any SearXNG instance. Cloud and CI IPs get blocked more often; check `unresponsive_engines`.
 - **Prebuilt binaries only for linux-x64 (glibc), darwin-arm64 and win32-x64.** The macOS binary is not signed or notarized.
-- **Memory:** about 125 MiB RSS on Linux; more than SearXNG from source (about 87 MiB), since compiled code is larger.
+- **Memory:** on Linux about 95 MiB RSS idle and 120 MiB after a few searches, close to SearXNG run from source (about 80 and 115 MiB). Fewer engines (`use_default_settings.engines.keep_only` in your settings) use less.
 
 ## Building from source
 

@@ -14,6 +14,24 @@ import threading
 import sxng_stubs
 
 
+# glibc gives each thread that allocates its own malloc arena, up to 8 per core,
+# and the server runs a thread per request plus SearXNG's per-engine threads.
+# Two arenas keep about 13 MiB less RSS after a few searches. This has to happen
+# before any thread starts; MALLOC_ARENA_MAX in the environment takes precedence.
+def _limit_malloc_arenas(count=2):
+    if not sys.platform.startswith("linux") or "MALLOC_ARENA_MAX" in os.environ:
+        return
+    try:
+        import ctypes
+
+        ctypes.CDLL(None).mallopt(-8, count)  # M_ARENA_MAX
+    except (OSError, AttributeError):  # not glibc
+        pass
+
+
+_limit_malloc_arenas()
+
+
 # The onefile launcher extracts the payload (or checks an earlier extraction,
 # file by file) and then runs the server executable from it as its child. That
 # executable also runs on its own, without the launcher's ~0.5 s and ~35 MiB,

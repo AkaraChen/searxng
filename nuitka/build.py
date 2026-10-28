@@ -57,6 +57,10 @@ def freeze_version():
     run([sys.executable, "-m", "searx.version", "freeze"], cwd=SEARXNG_DIR, env=env)
 
 
+# Distributions that read their own metadata at import time (version lookups).
+METADATA = ["babel", "click", "curl_cffi", "Flask", "itsdangerous", "MarkupSafe", "Werkzeug"]
+
+
 def nuitka_flags(trim_babel):
     flags = [
         "--onefile",
@@ -90,6 +94,10 @@ def nuitka_flags(trim_babel):
         "--noinclude-data-files=searx/data/ahmia_blacklist.txt",
         # Strip extension modules (Linux; curl_cffi ships 41 MB unstripped).
         f"--user-plugin={os.path.join(HERE, 'strip_plugin.py')}",
+        # Bytecode instead of compiled C: about 23 MiB less RSS.
+        f"--user-plugin={os.path.join(HERE, 'bytecode_plugin.py')}",
+        # ...whose importlib.metadata lookups then need the metadata.
+        *(f"--include-distribution-metadata={d}" for d in METADATA),
     ]
     if trim_babel:
         flags.append(f"--user-plugin={os.path.join(HERE, 'babel_plugin.py')}")
@@ -106,6 +114,7 @@ def cache_key(flags):
         "build.py",
         "strip_plugin.py",
         "pyc_plugin.py",
+        "bytecode_plugin.py",
         "babel_plugin.py",
         "settings.yml",
     ):
