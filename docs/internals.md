@@ -84,9 +84,9 @@ For comparison, the official Docker image is about 98 MB. SearXNG from source in
 
 Notes:
 - zstd onefile compression is active: the payload compresses to about 25%.
-- The bootstrap process stays resident (about 55 MiB RSS, mostly its own mapped payload), and the child is about 170 MiB. Compiled code uses more memory than bytecode.
+- The bootstrap process stays resident (about 55 MiB RSS, mostly its own mapped payload), and the child is about 170 MiB. These rows predate the bytecode build (see below), which uses less.
 - Even when warm, the onefile bootstrap adds about 0.5 s and 35 MiB over running the unpacked dist. It decompresses the whole payload and CRC32-checks every extracted file on every start. The JS client therefore runs the extracted server executable directly after the first start (see Client).
-- What the default build is made of, compressed: Nuitka-compiled code 13 MB, libpython 7.7 MB, babel locale data 6.1 MB, curl_cffi 2.6 MB, lxml 2.5 MB, SearXNG data and sources 1.5 MB.
+- What the default build was made of before the bytecode build, compressed: Nuitka-compiled code 13 MB, libpython 7.7 MB, babel locale data 6.1 MB, curl_cffi 2.6 MB, lxml 2.5 MB, SearXNG data and sources 1.5 MB.
 - curl_cffi's 41 MB `_wrapper.abi3.so` is mostly debug symbols. Stripped, it is 6.8 MB (2.6 MB compressed), so it is not a size floor.
 
 ## How it works, and what broke under Nuitka
@@ -100,6 +100,8 @@ Notes:
   - `pwd`: missing on Windows, and imported by `searx/valkeydb.py`.
 - **Static files:** settings validation requires `ui.static_path` to be a directory, so `run.py` creates an empty `searx/static` in the extraction directory.
 - **Version:** `searx.version freeze` runs at build time, so the binary does not run `git` at every start.
+- **Bytecode, not compiled C.** Compiled code is several times larger than bytecode, and the pages an import touches stay resident. With every module compiled, the extracted server used 117 MiB RSS idle and about 150 MiB after four searches, against 79 and 110–116 MiB for the same SearXNG run from source by CPython. All of the difference was the executable's code pages. `bytecode_plugin.py` makes Nuitka include every module as bytecode except the entry point and its plugin-generated trigger modules, which Nuitka requires compiled. That gives 95 MiB idle and about 120 MiB after four searches, a 24.8 MiB binary instead of 33.8 MiB, and a build half as long; starts are as fast. What remains over CPython is mostly the bytecode the executable carries, in clean file-backed pages the kernel can reclaim. Compiled code has `importlib.metadata` version lookups resolved at build time, and bytecode does them at run time, so the build includes the metadata of the distributions that look themselves up (`METADATA` in `build.py`). Without it, the binary fails at start with `PackageNotFoundError: curl_cffi`.
+- **Two malloc arenas.** glibc gives each allocating thread its own arena, up to 8 per core, and the server runs a thread per request plus SearXNG's per-engine threads. `run.py` calls `mallopt(M_ARENA_MAX, 2)` on Linux before any thread starts, which saves about 10 MiB RSS after four searches. `MALLOC_ARENA_MAX` in the environment takes precedence.
 - **Untrimmed builds** also need `--include-module=pygments.formatters.html`. pygments loads formatters lazily and Nuitka's config doesn't cover that.
 - **Stopping.** The binary is a onefile launcher that runs the server as a child. On SIGTERM the launcher sends the child SIGINT and SIGKILLs it 5 s later. On macOS the child's default KeyboardInterrupt shutdown took longer than that, so a client that SIGKILLed the launcher after its own 5 s orphaned the child. `run.py` now exits at once on SIGINT/SIGTERM, and the client waits 10 s before SIGKILL. On Windows, terminating the launcher does not end the child: in CI it was still serving 30 s later, even though Nuitka's runtime is meant to stop the child when the launcher dies. Kill the process tree there (`taskkill /T /F /PID <pid>`), as the client does. Independently, `SEARXNG_EXIT_ON_STDIN_EOF=1` makes the server exit when stdin closes, which covers a parent that dies without cleaning up.
 - **Time zones on Windows.** Windows has no system time zone database, so `zoneinfo` needs the `tzdata` package. Without it the `bilibili` engine failed to load, and the weather answerer and `time_zone` plugin had no zones. The Windows build installs it, and Nuitka bundles it.
@@ -144,13 +146,12 @@ All trims are build flags, small Nuitka user plugins (`strip_plugin.py`, `pyc_pl
 
 Estimates are compressed sizes on Linux.
 
-- **Drop the compiled copies of engines** (about 2.5 MB). They are dead weight because engines run from the shipped sources. This needs `--nofollow-import-to=searx.engines.*` plus `--no-deployment-flag=excluded-module-usage`, and an explicit `--include-module` list for modules that only engines import. The list would be generated from a previous build's `report.xml`.
+- **Drop the bundled copies of engines** (now bytecode, so less than the 2.5 MB they were compiled). They are dead weight because engines run from the shipped sources. This needs `--nofollow-import-to=searx.engines.*` plus `--no-deployment-flag=excluded-module-usage`, and an explicit `--include-module` list for modules that only engines import. The list would be generated from a previous build's `report.xml`.
 - **lxml extras** (about 1 MB): `--nofollow-import-to=lxml.objectify,lxml.sax,lxml.builder`. SearXNG only uses `lxml.etree` and `lxml.html`. Prepared but not measured.
 - **`--trim-babel`** (4 MB) already exists as an opt-in. A lossless middle set, all locales SearXNG's tables reach, saves only about 1 MB.
 - **`no_docstrings`/`no_asserts`** (0.6 MB): tested to work, but left out for the risk.
 - **Strip on macOS** (`strip -x` before Nuitka re-signs). Check whether the macOS curl_cffi wheel is unstripped too.
 - **Smaller stdlib:** `_pyrepl`, `__hello__` and similar (< 0.3 MB).
-- **Memory:** compiled code costs memory. The same SearXNG run from source by CPython starts as fast and uses about 87 MiB instead of 125 MiB. Getting there means bytecode instead of Nuitka-compiled modules for most packages.
 - **CI:** cache Nuitka/ccache between runs; add linux-arm64 and macos-x64; use a manylinux_2_28 container for Linux.
 
 ## Verdict

@@ -164,7 +164,7 @@ const client = createClient({ baseUrl: "https://searx.example.org" });   // 该�
 - **不支持 valkey/redis。** 设置 `valkey.url` 会导致服务启动失败，因此也没有基于 valkey 的 limiter。
 - **搜索引擎可能封禁或限流**，这点与任何 SearXNG 实例相同。云服务器和 CI 的 IP 更容易被封，请留意 `unresponsive_engines`。
 - **预编译二进制只有 linux-x64（glibc）、darwin-arm64、win32-x64。** macOS 二进制未签名、未公证。
-- **内存：** Linux 上 RSS 约 125 MiB；编译后的代码更占内存，比从源码运行 SearXNG（约 87 MiB）多。
+- **内存：** Linux 上空闲时 RSS 约 95 MiB，搜索几次后约 120 MiB，和从源码运行 SearXNG（约 80 和 115 MiB）接近。少启用一些引擎（配置里的 `use_default_settings.engines.keep_only`）还能更省。
 
 ## 从源码构建
 

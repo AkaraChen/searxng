@@ -164,7 +164,7 @@ The details are in [docs/internals.md](docs/internals.md): the size and startup 
 - **No valkey/redis.** Setting `valkey.url` makes the server fail at startup, so there is no limiter backed by valkey.
 - **Engines can block or rate-limit you**, as with any SearXNG instance. Cloud and CI IPs get blocked more often; check `unresponsive_engines`.
 - **Prebuilt binaries only for linux-x64 (glibc), darwin-arm64 and win32-x64.** The macOS binary is not signed or notarized.
-- **Memory:** about 125 MiB RSS on Linux; more than SearXNG from source (about 87 MiB), since compiled code is larger.
+- **Memory:** on Linux about 95 MiB RSS idle and 120 MiB after a few searches, close to SearXNG run from source (about 80 and 115 MiB). Fewer engines (`use_default_settings.engines.keep_only` in your settings) use less.
 
 ## Building from source
 
