@@ -24,6 +24,7 @@ for (const r of res.results) console.log(r.title, r.url, r.engines);
 
 - `startServer` picks a free port (or `port`), binds `127.0.0.1` (or `host`), and writes a minimal `settings.yml` to a temporary directory unless you pass `settingsPath`. Port, host and a random secret are passed as `SEARXNG_PORT`, `SEARXNG_BIND_ADDRESS` and `SEARXNG_SECRET`, which override the file. It rejects with `StartServerError` (including the last 8 KB of server output) if the process exits, `timeoutMs` (default 60 s) passes, or `signal` aborts.
 - Without `binaryPath` or `$SEARXNG_BINARY`, `resolveBinary()` imports the platform package for `process.platform`/`process.arch`. The imports are literal, so `bun build --compile` inlines the platform, embeds only the target's binary, and the package of other targets need not be installed. Inside a compiled executable the binary is an embedded file (`/$bunfs/...`), which cannot be spawned, so it is unpacked once to `<user cache dir>/searxng-js/<name>-<hash>/`. The platform packages carry `os`, `cpu` and (Linux) `libc: glibc`, so musl systems get no binary and a clear error.
+- The binary is a onefile launcher: every start, it checks its extraction in the user cache directory file by file (CRC32 of about 140 MB), then runs the server executable from there as a child. The client skips that after the first start. Started with `SEARXNG_EXTRACTION_RECORD=<file>`, the binary records its extracted server executable there, and later starts spawn that executable directly. That saves about 0.5 s and 35 MiB per start (measured on Linux). The record is `<user cache dir>/searxng-js/extracted/<SHA-256 of the binary>.json`, so a different binary never uses it, and Nuitka's extraction directory carries a hash of the build. If the recorded executable is gone, the binary runs instead; if it exits before it is ready, the client deletes the record and runs the binary, which repairs the extraction. `reuseExtraction: false` always runs the binary; `server.executable` shows what was spawned.
 - The server does not outlive its parent. `stop()` and an exit handler end it (on Windows by killing the process tree, since the binary is a launcher plus a server child). If the Node/Bun process dies without running exit handlers, e.g. on SIGKILL, the server exits too: it gets a stdin pipe and `SEARXNG_EXIT_ON_STDIN_EOF=1`, so it stops when the pipe closes. The integration tests cover both on all three platforms.
 - `createClient({ baseUrl })` exposes `search(params)`, `config()` and `health()`. Params are camelCase (`page`, `timeRange`, `safeSearch`); lists are joined with commas. Responses keep SearXNG's field names. Non-2xx responses throw `SearxngError` with `status` and SearXNG's `error` message. The default per-request timeout is 30 s, and it combines with a caller's `signal`.
 - Runs on Node ≥ 20.3 and Bun. `bun test` runs the unit tests (a fake server stands in for SearXNG). `SEARXNG_BINARY=… bun test` also runs the integration tests against a real binary.
@@ -55,7 +56,7 @@ python build.py build                       # -> build/searxng[.exe], build/buil
 python smoke.py                             # binary + settings.yml in an empty dir, ~8 queries
 ```
 
-You need Python 3.13 and a C compiler (gcc/clang; MSVC on Windows). Run `build/searxng` next to a `settings.yml` (see `nuitka/settings.yml`), or set `SEARXNG_SETTINGS_PATH`. On the first start it unpacks itself to `<user cache dir>/searxng/<version>-<hash>/` (`$XDG_CACHE_HOME` or else `~/.cache` on Linux and macOS, `%LOCALAPPDATA%` on Windows). Later starts reuse that directory. The hash covers everything that goes into the binary (sources, flags, installed package versions), so a new build never reuses a stale extraction.
+You need Python 3.13 and a C compiler (gcc/clang; MSVC on Windows). Run `build/searxng` next to a `settings.yml` (see `nuitka/settings.yml`), or set `SEARXNG_SETTINGS_PATH`. On the first start it unpacks itself to `<user cache dir>/searxng/<version>-<hash>/` (`$XDG_CACHE_HOME` or else `~/.cache` on Linux and macOS, `%LOCALAPPDATA%` on Windows). Later starts reuse that directory. The hash covers everything that goes into the binary (sources, flags, installed package versions), so a new build never reuses a stale extraction. The server executable in it (`searxng.bin`, `searxng.exe` on Windows; `server_executable` in `build-info.json`) also runs on its own, without the launcher.
 
 ## Results in CI
 
@@ -102,13 +103,13 @@ For comparison, the official Docker image is about 98 MB. SearXNG from source in
 Notes:
 - zstd onefile compression is active: the payload compresses to about 25%.
 - The bootstrap process stays resident (about 55 MiB RSS, mostly its own mapped payload), and the child is about 170 MiB. Compiled code uses more memory than bytecode.
-- Even when warm, the onefile bootstrap adds about 0.5 s over running the unpacked dist. It still walks the compressed payload to check the cache, so a smaller payload also starts faster.
+- Even when warm, the onefile bootstrap adds about 0.5 s and 35 MiB over running the unpacked dist. It decompresses the whole payload and CRC32-checks every extracted file on every start. The JS client therefore runs the extracted server executable directly after the first start (see Client).
 - What the default build is made of, compressed: Nuitka-compiled code 13 MB, libpython 7.7 MB, babel locale data 6.1 MB, curl_cffi 2.6 MB, lxml 2.5 MB, SearXNG data and sources 1.5 MB.
 - curl_cffi's 41 MB `_wrapper.abi3.so` is mostly debug symbols. Stripped, it is 6.8 MB (2.6 MB compressed), so it is not a size floor.
 
 ## How it works, and what broke under Nuitka
 
-- **Engines are loaded by file path.** `searx/engines/__init__.py` loads each configured engine with `spec_from_file_location("<name>.py")`, creating a fresh module per engine entry, because `xpath`, `json_engine` and others back several engines with different settings. A compiled build has no `.py` files, so every engine silently failed to load. Redirecting to compiled modules is not safe either: Nuitka keeps a compiled module's globals in C statics, so a second instance would clobber the first. The build ships `searx/**/*.py` as data instead. Engines then run as ordinary bytecode, exactly as upstream does, and answerers (found by `iterdir()`) work too.
+- **Engines are loaded by file path.** `searx/engines/__init__.py` loads each configured engine with `spec_from_file_location("<name>.py")`, creating a fresh module per engine entry, because `xpath`, `json_engine` and others back several engines with different settings. A compiled build has no `.py` files, so every engine silently failed to load. Redirecting to compiled modules is not safe either: Nuitka keeps a compiled module's globals in C statics, so a second instance would clobber the first. The build ships `searx/**/*.py` as data instead. Engines then run as ordinary bytecode, exactly as upstream does, and answerers (found by `iterdir()`) work too. `pyc_plugin.py` adds precompiled `.pyc` files for them, so that no start compiles about 180 engine modules. Nuitka leaves `__pycache__` out of package data, so the plugin registers the files itself. They are unchecked-hash `.pyc` files: Python uses them without comparing against the source's mtime, which extraction does not keep. `smoke.py` fails if any `.pyc` in the extraction was written at runtime.
 - **The error recorder needs source lines.** `searx/metrics/error_recorder.py` uses `inspect.trace()[…].code_context[0]`, which is `None` for compiled frames without a source file. Every engine error crashed the handler, which skipped engine suspension. The shipped sources fix that as well.
 - **Stubs** (`nuitka/sxng_stubs.py`, installed by `run.py` only when a module is missing):
   - `pygments`: HTML code highlighting only. Nuitka's package config would otherwise compile all 327 lexer modules, about 125 MB of C.
@@ -140,7 +141,7 @@ What can break on a SearXNG upgrade:
 
 ## Upkeep
 
-All trims are build flags, two small Nuitka user plugins (`strip_plugin.py`, `babel_plugin.py`) and the entry script with its stubs. SearXNG's source is never patched. An upgrade means bumping `SEARXNG_COMMIT` (and `VERSION`) in `nuitka/build.py` and letting CI run. The stubs need attention only if SearXNG starts *calling* into pygments, typer or valkey on the JSON path. The `--trim-babel` keep list is computed from the SearXNG source at build time.
+All trims are build flags, small Nuitka user plugins (`strip_plugin.py`, `pyc_plugin.py`, `babel_plugin.py`) and the entry script with its stubs. SearXNG's source is never patched. An upgrade means bumping `SEARXNG_COMMIT` (and `VERSION`) in `nuitka/build.py` and letting CI run. The stubs need attention only if SearXNG starts *calling* into pygments, typer or valkey on the JSON path. The `--trim-babel` keep list is computed from the SearXNG source at build time.
 
 ## Portability
 
@@ -167,7 +168,7 @@ Estimates are compressed sizes on Linux.
 - **`no_docstrings`/`no_asserts`** (0.6 MB): tested to work, but left out for the risk.
 - **Strip on macOS** (`strip -x` before Nuitka re-signs). Check whether the macOS curl_cffi wheel is unstripped too.
 - **Smaller stdlib:** `_pyrepl`, `__hello__` and similar (< 0.3 MB).
-- **Startup:** the onefile bootstrap's warm overhead is about 0.5 s. A `--standalone` directory (no onefile), unpacked once by the JS package, would start in about 0.7 s and drop the 55 MiB bootstrap process.
+- **Memory:** compiled code costs memory. The same SearXNG run from source by CPython starts as fast and uses about 87 MiB instead of 125 MiB. Getting there means bytecode instead of Nuitka-compiled modules for most packages.
 - **CI:** cache Nuitka/ccache between runs; add linux-arm64 and macos-x64; use a manylinux_2_28 container for Linux.
 
 ## Verdict

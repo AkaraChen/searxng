@@ -10,7 +10,7 @@ const res = await server.client.search({ q: "zig comptime", language: "en", cate
 for (const r of res.results) console.log(r.title, r.url, r.engines);
 ```
 
-- `startServer()` uses `binaryPath`, else `$SEARXNG_BINARY`, else the installed platform package. It picks a free port on `127.0.0.1`, writes a minimal `settings.yml` (or uses `settingsPath`), waits until `/healthz` answers, and returns `{ url, client, stop() }`. The server exits with your process, even when that process is killed.
+- `startServer()` uses `binaryPath`, else `$SEARXNG_BINARY`, else the installed platform package. It picks a free port on `127.0.0.1`, writes a minimal `settings.yml` (or uses `settingsPath`), waits until `/healthz` answers, and returns `{ url, client, stop() }`. The server exits with your process, even when that process is killed. After the first start it runs the server the binary extracted to the user cache directory directly, skipping the binary's launcher (about 0.5 s faster, 35 MiB less); `reuseExtraction: false` turns that off.
 - `bun build --compile` embeds the binary of the target platform into your executable; on first use it is unpacked to the user cache directory (`~/.cache/searxng-js`, `%LOCALAPPDATA%\searxng-js`). Install the platform package of every target you compile for, e.g. `bun install --os=linux --cpu=x64`.
 - `createClient({ baseUrl })` talks to any SearXNG instance that has the JSON format enabled.
 

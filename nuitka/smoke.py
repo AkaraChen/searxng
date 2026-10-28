@@ -6,7 +6,9 @@
 Fails on: no /healthz within 180 s, fewer than 100 engines loaded, an engine
 other than the onion ones failing to load, invalid JSON, no result from
 Wikipedia (proves outbound TLS through curl_cffi), the server not exiting on
-terminate, or the extraction cache not being reused.
+terminate, the extraction cache not being reused, .pyc files compiled at runtime
+instead of the shipped ones, or the extracted server executable not starting on
+its own (the JS client runs it directly).
 Other queries are reported, not enforced: CI IPs get CAPTCHAs.
 
 On Windows, terminate() is TerminateProcess on the onefile bootstrap only, so
@@ -61,9 +63,9 @@ def port_open():
         return s.connect_ex(("127.0.0.1", PORT)) == 0
 
 
-def start(binary, cwd, log):
+def start(binary, cwd, log, env=None):
     t0 = time.monotonic()
-    proc = subprocess.Popen([binary], cwd=cwd, stdout=log, stderr=subprocess.STDOUT)
+    proc = subprocess.Popen([binary], cwd=cwd, stdout=log, stderr=subprocess.STDOUT, env=env)
     while time.monotonic() - t0 < 180:
         if proc.poll() is not None:
             raise SystemExit(f"server exited with {proc.returncode} before /healthz answered")
@@ -109,6 +111,20 @@ def stop_bootstrap_only(proc):
     if wait_port_closed(10) is None:
         raise SystemExit("port still open after killing the server child")
     return rc, "survived 30 s" if lived is None else f"exited after {lived:.1f} s"
+
+
+def runtime_compiled_pyc(cache):
+    """.pyc files in the extraction that Python wrote itself. The build ships
+    unchecked-hash .pyc files (flags 1); Python writes timestamp-based ones (flags 0)."""
+    found, written = 0, []
+    for root, _dirs, files in os.walk(os.path.join(cache, "searx")):
+        for name in files:
+            if name.endswith(".pyc"):
+                found += 1
+                with open(os.path.join(root, name), "rb") as f:
+                    if int.from_bytes(f.read(8)[4:], "little") != 1:
+                        written.append(name)
+    return found, written
 
 
 def main():
@@ -162,6 +178,19 @@ def main():
             rc_warm, orphan = stop_bootstrap_only(proc)
         else:
             rc_warm, orphan = stop(proc), None
+        pyc_found, pyc_written = runtime_compiled_pyc(cache)
+        if pyc_found < 100:
+            failures.append(f"only {pyc_found} .pyc files in the extraction")
+        if pyc_written:
+            failures.append(f"compiled at runtime: {', '.join(sorted(pyc_written)[:5])}")
+        # The extracted server executable without the launcher, as the JS client
+        # runs it. Its own directory has no settings.yml.
+        env = dict(os.environ, SEARXNG_SETTINGS_PATH=os.path.join(workdir, "settings.yml"))
+        proc, direct = start(os.path.join(cache, info["server_executable"]), workdir, log, env)
+        _, body = get("/config")
+        if len(json.loads(body)["engines"]) != engines:
+            failures.append("the extracted server executable loads other engines")
+        rc_direct = stop(proc)
     finally:
         log.close()
 
@@ -170,8 +199,10 @@ def main():
         "",
         f"- run on: {platform.platform(terse=True)}",
         f"- binary: {info['size'] / 1048576:.1f} MiB, built in {info['build_seconds']} s",
-        f"- start to /healthz: cold {cold:.2f} s, warm {warm:.2f} s; engines loaded: {engines} (not loaded: {not_loaded})",
-        f"- terminate: exit {rc_cold} / {rc_warm}",
+        f"- start to /healthz: cold {cold:.2f} s, warm {warm:.2f} s, extracted server alone {direct:.2f} s; "
+        f"engines loaded: {engines} (not loaded: {not_loaded})",
+        f"- terminate: exit {rc_cold} / {rc_warm} / {rc_direct}",
+        f"- precompiled .pyc files: {pyc_found}, compiled at runtime: {len(pyc_written)}",
         *([f"- bootstrap-only terminate: orphaned server child {orphan}"] if orphan else []),
         "",
         "| query | time | results + infoboxes | engines | unresponsive |",

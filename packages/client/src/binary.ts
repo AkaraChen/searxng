@@ -1,4 +1,5 @@
-import { constants } from "node:fs";
+import { createHash } from "node:crypto";
+import { constants, createReadStream } from "node:fs";
 import { access, chmod, mkdir, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join } from "node:path";
@@ -100,4 +101,44 @@ async function unpackEmbedded(path: string): Promise<string> {
     if (!(await unpacked())) throw err;
   }
   return target;
+}
+
+const digests = new Map<string, { size: number; mtimeMs: number; sha256: string }>();
+
+/** SHA-256 of a file, remembered for this process while its size and mtime stay the same. */
+async function sha256(path: string): Promise<string> {
+  const { size, mtimeMs } = await stat(path);
+  const known = digests.get(path);
+  if (known?.size === size && known.mtimeMs === mtimeMs) return known.sha256;
+  const hash = createHash("sha256");
+  for await (const chunk of createReadStream(path)) hash.update(chunk);
+  const digest = hash.digest("hex");
+  digests.set(path, { size, mtimeMs, sha256: digest });
+  return digest;
+}
+
+export interface ExtractedServer {
+  /** Where the binary, when started, records its extracted server executable. */
+  record: string;
+  /** The recorded server executable, if it exists. */
+  executable?: string;
+}
+
+/**
+ * The binary is a onefile launcher: every start it extracts its payload to the
+ * user cache directory, or checks every file of an earlier extraction, and then
+ * runs the server executable from there as its child. That executable also runs
+ * on its own, which saves the launcher's ~0.5 s and ~35 MiB. Started with
+ * `SEARXNG_EXTRACTION_RECORD=<record>`, the binary writes down where it is. The
+ * record is keyed by the binary's SHA-256, so it is never used for another binary.
+ */
+export async function extractedServer(binaryPath: string): Promise<ExtractedServer> {
+  const record = join(cacheDir(), "searxng-js", "extracted", `${await sha256(binaryPath)}.json`);
+  try {
+    const { executable } = JSON.parse(await readFile(record, "utf8")) as { executable?: unknown };
+    if (typeof executable === "string" && (await stat(executable)).isFile()) return { record, executable };
+  } catch {
+    // no record yet, or the extraction is gone
+  }
+  return { record };
 }

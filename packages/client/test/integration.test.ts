@@ -1,7 +1,7 @@
 // Against the real binary: SEARXNG_BINARY=/path/to/searxng bun test
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { spawn } from "node:child_process";
-import { join } from "node:path";
+import { basename, join } from "node:path";
 import { createClient, type SearxngServer, startServer } from "../src/index.ts";
 
 const binary = process.env.SEARXNG_BINARY;
@@ -38,12 +38,26 @@ describe.skipIf(!binary)("real SearXNG binary", () => {
     await server.stop();
     expect(await server.client.health()).toBe(false);
   }, 30_000);
+
+  test("a later start runs the extracted server without the onefile launcher", async () => {
+    const again = await startServer({ binaryPath: binary, timeoutMs: 180_000 });
+    try {
+      expect(basename(again.executable)).toBe(process.platform === "win32" ? "searxng.exe" : "searxng.bin");
+      expect((await again.client.config()).engines.length).toBeGreaterThan(100);
+    } finally {
+      await again.stop();
+    }
+    expect(await again.client.health()).toBe(false);
+  }, 200_000);
 });
 
 describe.skipIf(!binary)("real SearXNG binary, parent killed", () => {
-  test("the server exits when the process that started it dies", async () => {
+  test.each([
+    ["the extracted server", "1"],
+    ["the onefile binary", "0"],
+  ])("%s exits when the process that started it dies", async (_label, reuse) => {
     const parent = spawn(process.execPath, [join(import.meta.dir, "fixtures", "start-real.ts")], {
-      env: { ...process.env, SEARXNG_BINARY: binary },
+      env: { ...process.env, SEARXNG_BINARY: binary, REUSE_EXTRACTION: reuse },
       stdio: ["ignore", "pipe", "inherit"],
     });
     const url = await new Promise<string>((resolve, reject) => {
