@@ -24,7 +24,7 @@ SearXNG 是开源的元搜索引擎：把一次查询同时发给多个搜索引
 
 本仓库把它变成一个可以直接装的依赖：
 
-- **每个平台一个可执行文件。** 用 [Nuitka](https://nuitka.net) 把 SearXNG 连同 Python 运行时编译成单个文件，26–32 MiB，机器上不需要预装任何东西。
+- **每个平台一个可执行文件。** 用 [Nuitka](https://nuitka.net) 把 SearXNG 连同 Python 运行时编译成单个文件，21–23 MiB，机器上不需要预装任何东西。
 - **npm 包 `@searxng-js/searxng`。** 自动带上对应平台的二进制，负责启动、等待就绪、退出时关闭；另附 SearXNG JSON API 的类型化客户端。
 
 ## 能带来什么
@@ -153,7 +153,7 @@ const client = createClient({ baseUrl: "https://searx.example.org" });   // 该�
 
 | | 本项目 | 官方 Docker 镜像 | Python venv |
 |---|---|---|---|
-| 体积 | 26–32 MiB，单个文件 | 约 98 MB，另需 Docker | 解压后约 150–200 MB |
+| 体积 | 21–23 MiB，单个文件 | 约 98 MB，另需 Docker | 解压后约 150–200 MB |
 | 机器上需要 | 无 | Docker | Python 3 |
 | 启动 | Linux 上约 0.6 秒（首次最长约 4 秒） | 容器启动时间 | 约 0.6 秒 |
 | 生命周期 | 跟随你的进程 | 需自行管理 | 需自行管理 |

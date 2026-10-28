@@ -24,7 +24,7 @@ SearXNG is an open-source metasearch engine. It sends your query to many search 
 
 This repository turns it into something you can add as a dependency:
 
-- **A single executable per platform.** SearXNG and its Python runtime compiled with [Nuitka](https://nuitka.net) into one file of 26–32 MiB. Nothing to install on the machine.
+- **A single executable per platform.** SearXNG and its Python runtime compiled with [Nuitka](https://nuitka.net) into one file of 21–23 MiB. Nothing to install on the machine.
 - **An npm package, `@searxng-js/searxng`.** It brings the right binary for your platform, starts it, waits until it is ready and stops it again. It also includes a typed client for SearXNG's JSON API.
 
 ## Why use it
@@ -153,7 +153,7 @@ The details are in [docs/internals.md](docs/internals.md): the size and startup 
 
 | | this package | official Docker image | Python venv |
 |---|---|---|---|
-| size | 26–32 MiB, one file | about 98 MB, plus Docker | about 150–200 MB unpacked |
+| size | 21–23 MiB, one file | about 98 MB, plus Docker | about 150–200 MB unpacked |
 | needs on the machine | nothing | Docker | Python 3 |
 | startup | about 0.6 s on Linux (up to 4 s the first time) | container start | about 0.6 s |
 | lifecycle | tied to your process | you manage it | you manage it |
