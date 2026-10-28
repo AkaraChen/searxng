@@ -11,7 +11,7 @@
  * THIRD-PARTY-NOTICES.md, licenses/ and README.md.
  */
 import { existsSync } from "node:fs";
-import { chmod, cp, mkdir, rm, writeFile } from "node:fs/promises";
+import { chmod, cp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { packageName, type Target, TARGETS } from "../packages/client/src/targets.ts";
 import {
@@ -94,23 +94,20 @@ packages SearXNG needs.
 
 ## Licences of the bundled components
 
-\`licenses/\` holds the licence files of CPython and of every Python distribution installed for the
-build, as shipped in their wheels. Some of them (pygments, typer, valkey and their dependencies)
-are installed but replaced by stubs and are not in the binary.
+The binary is AGPL-3.0-or-later as a whole. \`licenses/\` holds the full licence texts of its parts:
 
-curl_cffi's wheel statically links components whose notices it does not ship:
+- \`licenses/<distribution>-<version>/\`: the licence files of CPython and of every Python
+  distribution installed for the build, as shipped in their wheels. Some (pygments, typer, valkey
+  and their dependencies) are installed but replaced by stubs and are not in the binary.
+- \`licenses/static/\`: the C libraries that wheels link statically without shipping their licences:
+  curl-impersonate, libcurl, BoringSSL, nghttp2, ngtcp2, nghttp3, c-ares, brotli, zstd, zlib and
+  libidn2 (in curl_cffi), libiconv (in lxml), libyaml (in PyYAML), libffi (in cffi). Its README.md
+  lists versions and how each is used; libidn2 and libiconv are used under GPL-2.0-or-later.
+- \`licenses/NATIVE-LIBRARIES.txt\`: every shared library and extension module in the binary.
 
-- curl-impersonate / libcurl: curl licence (MIT-style), https://curl.se/docs/copyright.html
-- BoringSSL: OpenSSL/SSLeay and ISC licences for older code, Apache-2.0 for newer code,
-  https://boringssl.googlesource.com/boringssl/+/HEAD/LICENSE
-- nghttp2 and nghttp3: MIT
-- brotli: MIT
-- zstd: BSD-3-Clause
-- zlib: zlib licence
-- libidn2: LGPL-3.0-or-later or GPL-2.0-or-later
-
-lxml bundles libxml2 and libxslt (MIT); babel ships CLDR data (Unicode licence). Nuitka's runtime,
-compiled into the binary, is Apache-2.0 (see licenses/Nuitka-*).
+lxml's own licence file covers libxml2 and libxslt (MIT); babel ships CLDR data (Unicode licence,
+in babel's licence file). Nuitka's runtime, compiled into the binary, is AGPL-3.0 with the Nuitka
+Runtime Library Exception (licenses/Nuitka-*).
 `;
 }
 
@@ -132,6 +129,31 @@ AGPL-3.0-or-later, like SearXNG; see LICENSE and THIRD-PARTY-NOTICES.md.
 `;
 }
 
+// Every native library in a build must have its licence in nuitka/third-party-licenses
+// (or come with a Python distribution whose licence files build.py collects).
+const COVERED_NATIVE: RegExp[] = [
+  /^_?[a-z0-9_]+\.(so|pyd)$/, // CPython extension modules and cffi's _cffi_backend
+  /^(lxml|markupsafe|msgspec|yaml|curl_cffi|curl_cffi\.libs)\//, // wheels; their libraries are in static/
+  /^(libpython3[.0-9]*\.(so[.0-9]*|dylib)|python3[0-9]*\.dll)$/,
+  /^(libssl|libcrypto)[-.0-9]*\.(so[.0-9]*|dylib|dll)$/,
+  /^(libffi|libbz2|liblzma|libsqlite3|libreadline|libtinfo|libuuid)[-.0-9]*\.(so[.0-9]*|dylib|dll)$/,
+  /^sqlite3\.dll$/,
+  /^vcruntime140(_1)?\.dll$/,
+];
+
+async function checkNativeLicences(t: Target, src: string): Promise<void> {
+  const list = join(src, "licenses", "NATIVE-LIBRARIES.txt");
+  if (!existsSync(list)) {
+    if (values["require-all"]) fail(`${t.id}: licenses/NATIVE-LIBRARIES.txt is missing`);
+    return;
+  }
+  const libs = (await readFile(list, "utf8")).split(/\r?\n/).filter(Boolean);
+  const unknown = libs.filter((lib) => !COVERED_NATIVE.some((re) => re.test(lib)));
+  if (unknown.length) {
+    fail(`${t.id}: no licence on record for ${unknown.join(", ")}; add it to nuitka/third-party-licenses and COVERED_NATIVE`);
+  }
+}
+
 const ENTRY_NODE = (exe: string) => `import { fileURLToPath } from "node:url";
 
 export default fileURLToPath(new URL("./bin/${exe}", import.meta.url));
@@ -148,6 +170,7 @@ for (const t of present) {
   const src = artifactDir(t);
   const dir = join(outDir, t.id);
   const info = await readJson<BuildInfo>(join(src, "build-info.json"));
+  await checkNativeLicences(t, src);
   await rm(dir, { recursive: true, force: true });
   await mkdir(join(dir, "bin"), { recursive: true });
   const binary = join(dir, "bin", t.executable);
@@ -156,6 +179,7 @@ for (const t of present) {
   const sha256 = await sha256File(binary);
   if (existsSync(join(src, "licenses"))) await cp(join(src, "licenses"), join(dir, "licenses"), { recursive: true });
   else if (values["require-all"]) fail(`${t.id}: build/licenses is missing`);
+  await cp(join(ROOT, "nuitka", "third-party-licenses"), join(dir, "licenses", "static"), { recursive: true });
   await cp(join(ROOT, "LICENSE"), join(dir, "LICENSE"));
   const buildInfo = { ...info, binary: `bin/${t.executable}`, sha256, package: packageName(t), version, sourceCommit };
   await writeFile(join(dir, "BUILD-INFO.json"), `${JSON.stringify(buildInfo, null, 2)}\n`);
