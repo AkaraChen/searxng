@@ -109,10 +109,27 @@ def cache_key(flags):
 BUILD_ONLY = {"ordered-set", "patchelf", "pip", "setuptools", "wheel", "zstandard"}
 
 
+def native_libraries():
+    """Shared libraries and extension modules in the standalone dist (relative paths)."""
+    dist = os.path.join(OUT_DIR, "run.dist")
+    found = []
+    for root, _dirs, files in os.walk(dist):
+        for name in files:
+            if re.search(r"\.(so(\.[0-9.]+)?|dylib|dll|pyd)$", name):
+                found.append(os.path.relpath(os.path.join(root, name), dist).replace(os.sep, "/"))
+    return sorted(found)
+
+
 def collect_licenses():
     """Copies the licence files of every installed distribution that can end up
-    in the binary, plus CPython's, to build/licenses/<name>-<version>/."""
+    in the binary, plus CPython's, to build/licenses/<name>-<version>/, and lists
+    the bundled native libraries in build/licenses/NATIVE-LIBRARIES.txt."""
     out = os.path.join(OUT_DIR, "licenses")
+    os.makedirs(out, exist_ok=True)
+    libs = native_libraries()
+    with open(os.path.join(out, "NATIVE-LIBRARIES.txt"), "w", encoding="utf-8") as f:
+        f.write("".join(f"{lib}\n" for lib in libs))
+    print("bundled native libraries:\n  " + "\n  ".join(libs), flush=True)
     names = re.compile(r"(LICEN[CS]E|COPYING|NOTICE|AUTHORS)", re.I)
     for dist in importlib.metadata.distributions():
         name = dist.metadata["Name"]
