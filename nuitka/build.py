@@ -86,6 +86,10 @@ def nuitka_flags(trim_babel):
         "--nofollow-import-to=pygments",
         "--nofollow-import-to=typer",
         "--nofollow-import-to=valkey",
+        # lxml extras SearXNG never imports (it uses lxml.etree and lxml.html).
+        "--nofollow-import-to=lxml.objectify",
+        "--nofollow-import-to=lxml.sax",
+        "--nofollow-import-to=lxml.builder",
         # Web UI assets (run.py leaves an empty static dir), the unused fastText
         # model, and the ahmia blacklist (only loaded with a Tor proxy).
         "--noinclude-data-files=searx/static/**",
