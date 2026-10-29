@@ -64,6 +64,8 @@ Results plus infoboxes per smoke query, from the same run. Only the Wikipedia qu
 | ja: `東京 ラーメン` | 20 | 20 | 20 | 20 |
 | de: `Wetter Berlin` | 24 | 26 | 24 | 23 |
 
+Binary sizes of the 0.1.3 release build ([run 40809851151](https://github.com/AkaraChen/searxng/actions/runs/40809851151); bytecode, full libpython strip, no lxml extras): linux-x64 22.6 MiB (23,705,816 B), darwin-arm64 22.0 MiB (23,039,776 B), win32-x64 21.0 MiB (21,979,136 B). The table above predates the bytecode build.
+
 Build time on the runners: Linux 8 min, macOS 14 min, Windows 22 min (no compiler cache).
 
 ## Results (Linux x86-64, measured locally)
@@ -76,7 +78,7 @@ Measured on an 8-core machine that was under heavy load. "Cold" means the extrac
 | deps: stub pygments, typer, valkey; frozen version | 44.8 MiB | 1.26 s | 1.07 s | 196 MiB | 188 MiB | ok |
 | ui: drop static, translations, fastText model, ahmia list | 42.1 MiB | 1.17 s | 1.00 s | 194 MiB | 176 MiB | ok |
 | **strip: strip extension modules (Linux)** | **33.7 MiB** | 1.13 s | 1.06 s | 185 MiB | 140 MiB | ok |
-| + ship SearXNG's `.py` sources (current default build) | **33.8 MiB** | 1.22 s | 1.01 s | – | – | ok, 261 engines |
+| + ship SearXNG's `.py` sources (default build up to 0.1.1) | **33.8 MiB** | 1.22 s | 1.01 s | – | – | ok, 261 engines |
 | *optional* nodoc: `no_docstrings`, `no_asserts` | 33.1 MiB | 1.11 s | 0.94 s | 180 MiB | 138 MiB | ok |
 | *optional* babel: only `sxng_locales` locale data (`--trim-babel`) | 29.0 MiB | 1.19 s | 1.02 s | 176 MiB | 115 MiB | ok, but see Risk |
 
@@ -88,6 +90,24 @@ Notes:
 - Even when warm, the onefile bootstrap adds about 0.5 s and 35 MiB over running the unpacked dist. It decompresses the whole payload and CRC32-checks every extracted file on every start. The JS client therefore runs the extracted server executable directly after the first start (see Client).
 - What the default build was made of before the bytecode build, compressed: Nuitka-compiled code 13 MB, libpython 7.7 MB, babel locale data 6.1 MB, curl_cffi 2.6 MB, lxml 2.5 MB, SearXNG data and sources 1.5 MB.
 - curl_cffi's 41 MB `_wrapper.abi3.so` is mostly debug symbols. Stripped, it is 6.8 MB (2.6 MB compressed), so it is not a size floor.
+
+### Since the bytecode build
+
+Same machine, measured on 2026-10-29. Sizes are the onefile binary.
+
+| step (cumulative) | size | change |
+|---|---|---|
+| bytecode build (0.1.2) | 24.8 MiB (26,052,816 B) | |
+| + full strip of libpython | 23.4 MiB (24,516,816 B) | −1.46 MiB |
+| + no `lxml.objectify`, `lxml.sax`, `lxml.builder` (0.1.3, default) | **23.0 MiB** (24,070,352 B) | −0.44 MiB |
+| *optional* `--trim-babel` on the 0.1.2 build | 20.7 MiB (21,747,920 B) | −4.1 MiB |
+
+- **libpython:** it reaches the dist without passing through Nuitka's `onCopiedDLL` hook, so `strip_plugin.py` strips it in `onStandaloneDistributionFinished`. It is linked with `--emit-relocs`: its `.rela.*` sections (not loaded) reference every symbol, so `--strip-unneeded` removes nothing and only `--strip-all` shrinks it, from 30.7 to 20.1 MB. The dynamic symbol table that extension modules link against stays. Idle RSS is unchanged.
+- **lxml:** SearXNG and its engines use only `lxml.etree` and `lxml.html`, and `lxml.html` does not import `lxml.builder` (only the unused `lxml.html.builder` does).
+- **What the 0.1.3 build is made of, compressed:** libpython 6.6 MB, babel locale data 6.4 MB, the executable with all bytecode 4.2 MB, curl_cffi 2.6 MB, SearXNG data and sources 2.2 MB, lxml 1.0 MB. `searxng.bin` is already stripped.
+- **Memory of the extracted server** (`searxng.bin` alone, default settings, 261 engines): 94 MiB RSS idle, 125 MiB after 40 searches, and a plateau of 134 MiB after 120 searches including images. Of that, 59, 86 and 96 MiB are anonymous memory; the rest is clean file-backed pages of the executable and libraries. CPython running the same SearXNG from source idles at 79 MiB.
+- **Where the idle heap goes** (tracemalloc under CPython, 49 MiB): 19 MiB of code objects from about a thousand imported modules, 11 MiB of JSON data (engine traits for every configured engine 6.2 MiB, external bangs 2.1 MiB, engine descriptions 1.9 MiB) and 3 MiB of metrics histograms. All three come from SearXNG itself; the engine count is the lever (`use_default_settings.engines.keep_only`).
+- **Throughput** (werkzeug, thread per connection): `/healthz` 686 requests/s from 1 connection and 631 from 8; `/config` 411 from 8. CPython from source: 725, 816 and 391. A search is bound by the engines' network round trips: about 30 ms with `engines=wikipedia`, 0.8–1.2 s for a default general search.
 
 ## How it works, and what broke under Nuitka
 
@@ -115,10 +135,15 @@ What is removed:
 - **Static files and translations:** the HTML UI renders without CSS/JS and in English only. That is out of scope here.
 - **fastText model:** nothing reads it.
 - **ahmia blacklist:** it is used only with `outgoing.using_tor_proxy`.
-- **babel locale data, only with `--trim-babel`:** languages outside `searx/sxng_locales.py` silently fall back to English. Tested: `sw-KE` and `eu` produced `hl=en`. Requests for zh-CN, zh-TW, de, de-CH, ja, fr, pt-BR, ru, ar, ko, fil-PH, ca-ES, all and auto were identical to the untrimmed build.
+- **babel locale data, only with `--trim-babel`:** languages in `searx/sxng_locales.py`, which are all the UI offers, behave exactly as untrimmed. Tested: zh-CN, zh-TW, zh-HK, de, de-CH, de-AT, ja, fr, fr-CA, pt-BR, ru, ar, ko, fil-PH, ca-ES, en-IN, es-MX, af, cy, gl, all and auto. Other languages are still accepted through the API (`language=`), a query prefix or a saved preference. For them some engines lose their language or region instead of falling back wholesale to English, because most engines map the tag through their own traits. Compared on engine request parameters (2026-10-29):
+  - `Accept-Language` becomes `en-US,en;q=0.9` for every such language.
+  - Bing drops `setlang`/`cc` (sw, gsw, is, hy, ka, ky, uz).
+  - Brave degrades `ui_lang`/`country` (sw, gsw), and DuckDuckGo's `kl` becomes `wt-wt` (is).
+  - Google switches to `hl=en` only for region-qualified tags such as `sw-KE`; `eu` keeps `hl=eu`.
+  - Wikipedia's subdomain, the hosts contacted and the query text are unchanged. Nothing errors, and no engine is skipped.
 
 What can break on a SearXNG upgrade:
-- a new module-level import of something stubbed or excluded. The build still succeeds, but the binary fails at start with Nuitka's "actively excluded" ImportError, and `smoke.py` catches that.
+- a new module-level import of something stubbed or excluded (pygments, typer, valkey, `lxml.objectify`, `lxml.sax`, `lxml.builder`; `lxml.html.builder` imports the last). The build still succeeds, but the binary fails at start with Nuitka's "actively excluded" ImportError, and `smoke.py` catches that.
 - another file-system lookup of package contents. That is how both bugs above were found; the smoke test's `engines loaded ≥ 100` check catches engine loading.
 - new lazily imported modules that Nuitka cannot see.
 - `/config` or result fields that change shape, which needs updating `packages/client/src/types.ts`.
@@ -147,13 +172,13 @@ All trims are build flags, small Nuitka user plugins (`strip_plugin.py`, `pyc_pl
 Estimates are compressed sizes on Linux.
 
 - **Drop the bundled copies of engines** (now bytecode, so less than the 2.5 MB they were compiled). They are dead weight because engines run from the shipped sources. This needs `--nofollow-import-to=searx.engines.*` plus `--no-deployment-flag=excluded-module-usage`, and an explicit `--include-module` list for modules that only engines import. The list would be generated from a previous build's `report.xml`.
-- **lxml extras** (about 1 MB): `--nofollow-import-to=lxml.objectify,lxml.sax,lxml.builder`. SearXNG only uses `lxml.etree` and `lxml.html`. Prepared but not measured.
-- **`--trim-babel`** (4 MB) already exists as an opt-in. A lossless middle set, all locales SearXNG's tables reach, saves only about 1 MB.
+- **`--trim-babel`** (4.1 MiB) already exists as an opt-in; see Risk for what it changes. A lossless middle set, all locales SearXNG's tables reach, saves only about 1 MB.
 - **`no_docstrings`/`no_asserts`** (0.6 MB): tested to work, but left out for the risk.
 - **Strip on macOS** (`strip -x` before Nuitka re-signs). Check whether the macOS curl_cffi wheel is unstripped too.
+- **Fewer engines at run time, not in the build:** the default settings load all 261 engines, and engine modules, their traits and metrics all scale with that. `use_default_settings.engines.keep_only` cuts memory, start time and the latency of a default search; the client could take an engine list and write it. `general.enable_metrics: false` saves almost no memory: SearXNG's no-op histograms still allocate their buckets.
 - **Smaller stdlib:** `_pyrepl`, `__hello__` and similar (< 0.3 MB).
 - **CI:** cache Nuitka/ccache between runs; add linux-arm64 and macos-x64; use a manylinux_2_28 container for Linux.
 
 ## Verdict
 
-At most 50 MB is easily achievable: 33.8 MiB with low-risk trims (in CI: 32.0 MiB on Linux, 28.1 MiB on macOS, 26.1 MiB on Windows), or 29 MiB if non-listed languages may fall back to English. The cost is not size but fidelity work: two real breakages (engine loading, the error recorder) only showed up in the compiled build, and every SearXNG upgrade needs the CI smoke test. Compared with the official Docker image (about 98 MB, needs Docker) or a portable Python plus venv (about 150–200 MB unpacked, starts faster, no compile step), the single binary is worth it for embedding: one file per platform, no runtime dependency, started by `startServer()`. It is not worth it if your app can ship a directory, in which case the standalone dist without onefile is the better trade-off.
+At most 50 MB is easily achievable: 23.0 MiB on Linux with the default build (0.1.3, measured locally), or 20.7 MiB with `--trim-babel` if languages outside the UI's list may lose their engine-specific language parameters. What is left is mostly libpython, babel's locale data, curl_cffi and the bytecode of what SearXNG imports. The cost is not size but fidelity work: two real breakages (engine loading, the error recorder) only showed up in the compiled build, and every SearXNG upgrade needs the CI smoke test. Compared with the official Docker image (about 98 MB, needs Docker) or a portable Python plus venv (about 150–200 MB unpacked, starts faster, no compile step), the single binary is worth it for embedding: one file per platform, no runtime dependency, started by `startServer()`. It is not worth it if your app can ship a directory, in which case the standalone dist without onefile is the better trade-off.
